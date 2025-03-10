@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <!-- 배경 원 -->
+  <circle cx="256" cy="256" r="240" fill="#3498db" />
+  <circle cx="256" cy="256" r="220" fill="#2980b9" />
+  
+  <!-- 텍스트 박스 (자막을 상징) -->
+  <rect x="120" y="160" width="272" height="60" rx="15" fill="white" opacity="0.9"/>
+  <rect x="120" y="240" width="272" height="60" rx="15" fill="white" opacity="0.9"/>
+  <rect x="120" y="320" width="200" height="60" rx="15" fill="white" opacity="0.9"/>
+  
+  <!-- 번역 기호 -->
+  <path d="M140 180 H240" stroke="#3498db" stroke-width="12" stroke-linecap="round"/>
+  <path d="M140 200 H200" stroke="#3498db" stroke-width="12" stroke-linecap="round"/>
+  
+  <path d="M140 260 H180" stroke="#e74c3c" stroke-width="12" stroke-linecap="round"/>
+  <path d="M140 280 H220" stroke="#e74c3c" stroke-width="12" stroke-linecap="round"/>
+  
+  <path d="M140 340 H210" stroke="#2ecc71" stroke-width="12" stroke-linecap="round"/>
+  <path d="M140 360 H180" stroke="#2ecc71" stroke-width="12" stroke-linecap="round"/>
+  
+  <!-- 번역 방향 화살표 -->
+  <path d="M350 120 L350 400" stroke="white" stroke-width="12" stroke-linecap="round"/>
+  <path d="M320 370 L350 400 L380 370" fill="none" stroke="white" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  
+  <!-- 언어 기호 -->
+  <circle cx="300" cy="180" r="24" fill="#f39c12" stroke="white" stroke-width="4"/>
+  <circle cx="340" cy="260" r="24" fill="#9b59b6" stroke="white" stroke-width="4"/>
+  <circle cx="380" cy="180" r="24" fill="#1abc9c" stroke="white" stroke-width="4"/>
+</svg> 
