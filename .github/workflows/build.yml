@@ -5,6 +5,10 @@ on:
     tags:
       - 'v*'  # 태그가 v로 시작할 때 실행 (예: v1.0.0)
 
+# 권한 설정 추가
+permissions:
+  contents: write  # 릴리스 생성에 필요한 권한
+
 jobs:
   build:
     name: Build on ${{ matrix.os }}
