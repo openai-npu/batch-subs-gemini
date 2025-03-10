@@ -53,12 +53,10 @@ jobs:
           PYTHONIOENCODING: utf-8
 
       # Windows에 특별한 의존성 설치
-      - name: Install Windows-specific packages
+      - name: Install Windows Specific Packages
         if: matrix.os == 'windows-latest'
         run: |
           pip install pywin32
-        env:
-          PYTHONIOENCODING: utf-8
 
       # Linux에서는 ffmpeg 환경 설정
       - name: Install ffmpeg on Linux
@@ -68,53 +66,169 @@ jobs:
           sudo apt-get install -y ffmpeg
 
       # Windows에서 맞춤형 빌드 스크립트 실행
+      - name: Create Windows Runtime Hook
+        if: matrix.os == 'windows-latest'
+        run: |
+          echo "import os" > windows_hook.py
+          echo "import sys" >> windows_hook.py
+          echo "import ctypes" >> windows_hook.py
+          echo "" >> windows_hook.py
+          echo "# Add the application directory to PATH" >> windows_hook.py
+          echo "if hasattr(sys, 'frozen'):" >> windows_hook.py
+          echo "    bundle_dir = getattr(sys, '_MEIPASS', os.path.abspath(os.path.dirname(sys.executable)))" >> windows_hook.py
+          echo "    os.environ['PATH'] = f\"{bundle_dir}{os.pathsep}{os.environ.get('PATH', '')}\"" >> windows_hook.py
+          echo "" >> windows_hook.py
+          echo "    # Add _internal directory to PATH" >> windows_hook.py
+          echo "    internal_dir = os.path.join(os.path.dirname(sys.executable), '_internal')" >> windows_hook.py
+          echo "    if os.path.exists(internal_dir):" >> windows_hook.py
+          echo "        os.environ['PATH'] = f\"{internal_dir}{os.pathsep}{os.environ['PATH']}\"" >> windows_hook.py
+          echo "" >> windows_hook.py
+          echo "    # Add bin directory to PATH if it exists" >> windows_hook.py
+          echo "    bin_dir = os.path.join(bundle_dir, 'bin')" >> windows_hook.py
+          echo "    if os.path.exists(bin_dir):" >> windows_hook.py
+          echo "        os.environ['PATH'] = f\"{bin_dir}{os.pathsep}{os.environ['PATH']}\"" >> windows_hook.py
+          echo "" >> windows_hook.py
+          echo "# Ensure proper encoding" >> windows_hook.py
+          echo "if hasattr(sys, 'frozen'):" >> windows_hook.py
+          echo "    # Set UTF-8 encoding" >> windows_hook.py
+          echo "    import codecs" >> windows_hook.py
+          echo "    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)" >> windows_hook.py
+          echo "    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer)" >> windows_hook.py
+          echo "" >> windows_hook.py
+          echo "# Debug info" >> windows_hook.py
+          echo "if hasattr(sys, 'frozen'):" >> windows_hook.py
+          echo "    print(f\"Python executable: {sys.executable}\")" >> windows_hook.py
+          echo "    print(f\"Working directory: {os.getcwd()}\")" >> windows_hook.py
+          echo "    print(f\"sys._MEIPASS: {getattr(sys, '_MEIPASS', 'N/A')}\")" >> windows_hook.py
+        shell: cmd
+
       - name: Build with PyInstaller (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          # 환경 정보 출력
-          python -c "import sys; print(f'Python: {sys.version}')"
-          python -c "import platform; print(f'Platform: {platform.platform()}')"
-          
-          # 빌드 명령 직접 실행
-          pyinstaller --onedir --windowed --clean --noconfirm --name batch_subs_gemini --add-data "icons;icons" --hidden-import gemini_srt_translator --hidden-import google.generativeai --hidden-import google.api_core --hidden-import google.auth --hidden-import srt --hidden-import PyQt6 --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtGui --hidden-import PyQt6.QtWidgets --hidden-import requests --hidden-import ffmpeg_utils --hidden-import subtitle_utils --collect-all google.generativeai --collect-all google.api_core --collect-all google.auth --collect-all srt --collect-binary pywin32 --runtime-hook=windows_fix.py batch_subs_gemini.py
+          pyinstaller --onedir ^
+            --windowed ^
+            --clean ^
+            --noconfirm ^
+            --name batch_subs_gemini ^
+            --add-data "icons;icons" ^
+            --runtime-hook windows_hook.py ^
+            --hidden-import PyQt6.QtCore ^
+            --hidden-import PyQt6.QtGui ^
+            --hidden-import PyQt6.QtWidgets ^
+            --hidden-import google.generativeai ^
+            --hidden-import google.api_core ^
+            --hidden-import google.auth ^
+            --hidden-import srt ^
+            --hidden-import win32api ^
+            --hidden-import win32con ^
+            --hidden-import requests ^
+            --hidden-import ffmpeg_utils ^
+            --hidden-import subtitle_utils ^
+            --hidden-import logger_utils ^
+            --hidden-import queue ^
+            --hidden-import threading ^
+            --collect-all google.generativeai ^
+            --collect-all google.api_core ^
+            --collect-all google.auth ^
+            --collect-all srt ^
+            --collect-binaries pywin32 ^
+            --exclude-module tkinter ^
+            --exclude-module matplotlib ^
+            --exclude-module numpy ^
+            batch_subs_gemini.py
+        shell: cmd
         env:
           PYTHONIOENCODING: utf-8
 
-      # 윈도우 런타임 훅 스크립트 생성
-      - name: Create Windows runtime hook
-        if: matrix.os == 'windows-latest'
+      # 맥OS 빌드 명령
+      - name: Build with PyInstaller (macOS)
+        if: matrix.os == 'macos-latest'
         run: |
-          echo "import os" > windows_fix.py
-          echo "import sys" >> windows_fix.py
-          echo "# Add DLL dirs to PATH to help find dependencies" >> windows_fix.py
-          echo "os.environ['PATH'] = os.path.dirname(sys.executable) + os.pathsep + os.environ.get('PATH', '')" >> windows_fix.py
-        shell: bash
-
-      # 리눅스와 맥에서는 기존 방식으로 빌드
-      - name: Build with PyInstaller (Linux & macOS)
-        if: matrix.os != 'windows-latest'
+          pyinstaller --onedir \
+            --windowed \
+            --clean \
+            --noconfirm \
+            --name batch_subs_gemini \
+            --add-data "icons:icons" \
+            --hidden-import PyQt6.QtCore \
+            --hidden-import PyQt6.QtGui \
+            --hidden-import PyQt6.QtWidgets \
+            --hidden-import google.generativeai \
+            --hidden-import google.api_core \
+            --hidden-import google.auth \
+            --hidden-import srt \
+            --hidden-import requests \
+            --hidden-import ffmpeg_utils \
+            --hidden-import subtitle_utils \
+            --hidden-import logger_utils \
+            --hidden-import queue \
+            --hidden-import threading \
+            --collect-all google.generativeai \
+            --collect-all google.api_core \
+            --collect-all google.auth \
+            --collect-all srt \
+            --exclude-module tkinter \
+            --exclude-module matplotlib \
+            --exclude-module numpy \
+            batch_subs_gemini.py
+      
+      # 맥OS에서 앱 패키징
+      - name: Package macOS App
+        if: matrix.os == 'macos-latest'
         run: |
-          python build.py
-        env:
-          PYTHONIOENCODING: utf-8
+          cd dist
+          # macOS에서는 --windowed 옵션 사용 시 .app 확장자 디렉토리가 생성됨
+          if [ -d "batch_subs_gemini.app" ]; then
+            zip -r ../${{ matrix.artifact_name }}.zip batch_subs_gemini.app/
+          else
+            zip -r ../${{ matrix.artifact_name }}.zip batch_subs_gemini/
+          fi
 
-      - name: Package Application (Linux)
+      # 리눅스 빌드 명령
+      - name: Build with PyInstaller (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          pyinstaller --onedir \
+            --windowed \
+            --clean \
+            --noconfirm \
+            --name batch_subs_gemini \
+            --add-data "icons:icons" \
+            --hidden-import PyQt6.QtCore \
+            --hidden-import PyQt6.QtGui \
+            --hidden-import PyQt6.QtWidgets \
+            --hidden-import google.generativeai \
+            --hidden-import google.api_core \
+            --hidden-import google.auth \
+            --hidden-import srt \
+            --hidden-import requests \
+            --hidden-import ffmpeg_utils \
+            --hidden-import subtitle_utils \
+            --hidden-import logger_utils \
+            --hidden-import queue \
+            --hidden-import threading \
+            --collect-all google.generativeai \
+            --collect-all google.api_core \
+            --collect-all google.auth \
+            --collect-all srt \
+            --exclude-module tkinter \
+            --exclude-module matplotlib \
+            --exclude-module numpy \
+            batch_subs_gemini.py
+            
+      # 리눅스에서 앱 패키징
+      - name: Package Linux App
         if: matrix.os == 'ubuntu-latest'
         run: |
           cd dist
           zip -r ../${{ matrix.artifact_name }}.zip batch_subs_gemini/
-
-      - name: Package Application (Windows)
+            
+      # 윈도우에서 앱 패키징
+      - name: Package Windows App
         if: matrix.os == 'windows-latest'
         run: |
           cd dist
           powershell Compress-Archive -Path batch_subs_gemini -DestinationPath ../${{ matrix.artifact_name }}.zip
-
-      - name: Package Application (macOS)
-        if: matrix.os == 'macos-latest'
-        run: |
-          cd dist
-          zip -r ../${{ matrix.artifact_name }}.zip batch_subs_gemini.app/
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4

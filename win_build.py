@@ -39,23 +39,43 @@ def create_runtime_hook():
     hook_content = """
 import os
 import sys
+import ctypes
 
 # Add the application directory to PATH
-os.environ['PATH'] = os.path.dirname(sys.executable) + os.pathsep + os.environ.get('PATH', '')
+if hasattr(sys, 'frozen'):
+    bundle_dir = getattr(sys, '_MEIPASS', os.path.abspath(os.path.dirname(sys.executable)))
+    os.environ['PATH'] = f"{bundle_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+    
+    # Add _internal directory to PATH
+    internal_dir = os.path.join(os.path.dirname(sys.executable), '_internal')
+    if os.path.exists(internal_dir):
+        os.environ['PATH'] = f"{internal_dir}{os.pathsep}{os.environ['PATH']}"
+    
+    # Add bin directory to PATH if it exists
+    bin_dir = os.path.join(bundle_dir, 'bin')
+    if os.path.exists(bin_dir):
+        os.environ['PATH'] = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
 
 # Ensure proper encoding
 if hasattr(sys, 'frozen'):
-    # Ensure UTF-8 is used
+    # Set UTF-8 encoding
     import codecs
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
     sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer)
+
+# Debug info
+if hasattr(sys, 'frozen'):
+    print(f"Python executable: {sys.executable}")
+    print(f"Working directory: {os.getcwd()}")
+    print(f"sys._MEIPASS: {getattr(sys, '_MEIPASS', 'N/A')}")
 """
     
-    with open('windows_hook.py', 'w', encoding='utf-8') as f:
+    hook_path = 'windows_hook.py'
+    with open(hook_path, 'w', encoding='utf-8') as f:
         f.write(hook_content)
     
-    logger.info("Created Windows runtime hook script")
-    return os.path.abspath('windows_hook.py')
+    logger.info(f"Created Windows runtime hook at {hook_path}")
+    return os.path.abspath(hook_path)
 
 def prepare_binaries():
     """필요한 바이너리 파일 준비"""
@@ -165,17 +185,20 @@ def build_application():
         'requests',
         'ffmpeg_utils',
         'subtitle_utils',
+        'logger_utils',        # 새 로깅 유틸리티
+        'queue',               # 로깅에 필요한 모듈
+        'threading',           # 로깅에 필요한 모듈
     ]
     
     for hidden_import in hidden_imports:
         cmd.extend(['--hidden-import', hidden_import])
     
-    # 바이너리 수집 설정
+    # 바이너리 수집 설정 (--collect-binary 대신 --collect-binaries 사용)
     cmd.extend(['--collect-all', 'google.generativeai'])
     cmd.extend(['--collect-all', 'google.api_core'])
     cmd.extend(['--collect-all', 'google.auth'])
     cmd.extend(['--collect-all', 'srt'])
-    cmd.extend(['--collect-binary', 'pywin32'])  # pywin32 바이너리 수집
+    cmd.extend(['--collect-binaries', 'pywin32'])  # 올바른 옵션: collect-binaries
     
     # 기타 설정
     cmd.extend(['--exclude-module', 'tkinter'])  # 불필요한 모듈 제외
@@ -187,8 +210,11 @@ def build_application():
         cmd.extend(['--paths', str(dll_dir)])
     
     # site-packages 경로 추가
-    site_packages = site.getsitepackages()[0]
-    cmd.extend(['--paths', site_packages])
+    try:
+        site_packages = site.getsitepackages()[0]
+        cmd.extend(['--paths', site_packages])
+    except Exception as e:
+        logger.warning(f"Failed to get site-packages path: {e}")
     
     # 메인 스크립트 추가
     cmd.append('batch_subs_gemini.py')
