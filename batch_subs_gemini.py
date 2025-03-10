@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QProgressBar, QTextEdit, QGroupBox, QTabWidget, QMessageBox,
     QCheckBox, QSpinBox, QRadioButton, QButtonGroup
 )
-from PyQt6.QtCore import QThread, pyqtSignal, Qt, QSize
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QSize, QMetaObject, Q_ARG
 from PyQt6.QtGui import QIcon, QFont
 import gemini_srt_translator as gst
 
@@ -168,34 +168,38 @@ def translate_subtitle(srt_file):
         logging.error(f"[번역 에러] {os.path.basename(srt_file)} 처리 중 에러 발생: {ex}")
         return False
 
-# 향상된 로깅 핸들러 (기존 코드와의 호환성 유지)
+# LogHandler 클래스 전체 재구현
 class LogHandler(logging.Handler):
+    """Qt 로그 핸들러 (일반 또는 안전한 로깅)"""
     def __init__(self, signal):
         super().__init__()
         self.signal = signal
         self.safe_handler = None
         
-        # 새 유틸리티 사용 가능한 경우
+        # logger_utils가 있으면 안전한 로깅 설정
         if HAVE_UTILS:
-            self.safe_handler = logger_utils.QtLogHandler(signal)
+            try:
+                self.safe_handler = logger_utils.QtLogHandler()
+                self.safe_handler.connect_signal(signal)
+            except Exception as e:
+                print(f"안전한 로그 핸들러 초기화 실패: {e}")
+                self.safe_handler = None
     
     def emit(self, record):
         # 새 로깅 시스템 사용
-        if self.safe_handler:
-            # 이미 안전한 핸들러가 처리하므로 여기서는 아무 것도 하지 않음
-            return
-            
-        # 레거시 방식 폴백
-        try:
-            msg = self.format(record)
-            self.signal(msg)
-        except Exception as e:
-            # 오류 시 빈 함수 객체 확인
-            if callable(self.signal):
-                try:
-                    self.signal(f"로깅 오류: {e}")
-                except:
-                    pass  # 마지막 시도도 실패하면 무시
+        if HAVE_UTILS and self.safe_handler:
+            # 안전한 로그 핸들러에 위임
+            self.safe_handler.emit(record)
+        else:
+            # 이전 방식으로 직접 시그널 발생 (폴백)
+            try:
+                message = self.format(record)
+                # PyQt에서 스레드 안전하게 시그널 발생
+                if self.signal is not None:
+                    self.signal(message)
+            except Exception:
+                # 로깅 중 오류가 발생해도 앱은 계속 실행
+                pass
 
 class ModelLoaderWorker(QThread):
     models_loaded = pyqtSignal(list)
@@ -250,17 +254,13 @@ class TranslationWorker(QThread):
 
     def run(self):
         # 로깅 핸들러 설정
-        if HAVE_UTILS:
-            # 향상된 Qt 로깅 핸들러 사용
-            self.log_handler = logger_utils.QtLogHandler()
-            self.log_handler.connect_signal(self.log.emit)
-            self.log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-            logger.addHandler(self.log_handler)
-        else:
-            # 기존 로그 핸들러 사용
-            self.log_handler = LogHandler(self.log.emit)
-            self.log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-            logger.addHandler(self.log_handler)
+        self.log_handler = LogHandler(self.log.emit)
+        self.log_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+        
+        # 로그 핸들러 등록 (임시 로거 사용)
+        worker_logger = logging.getLogger(f"worker_{id(self)}")
+        worker_logger.setLevel(logging.INFO)
+        worker_logger.addHandler(self.log_handler)
         
         try:
             # ffmpeg 확인 및 다운로드 (필요한 경우)
@@ -338,13 +338,22 @@ class TranslationWorker(QThread):
             self.progress.emit(100)
 
         except Exception as e:
-            self.log.emit(f"Error: {str(e)}")
+            error_msg = f"오류 발생: {str(e)}"
+            logging.error(error_msg)
+            self.status.emit(error_msg)
         finally:
-            # 로깅 핸들러 제거
-            if self.log_handler:
-                logger.removeHandler(self.log_handler)
-                if HAVE_UTILS and hasattr(self.log_handler, 'disconnect_signal'):
-                    self.log_handler.disconnect_signal(self.log.emit)
+            # 로그 핸들러 정리
+            if HAVE_UTILS and self.log_handler.safe_handler:
+                try:
+                    self.log_handler.safe_handler.disconnect_signal(self.log.emit)
+                except Exception:
+                    pass
+            
+            # 로그 핸들러 제거
+            worker_logger.removeHandler(self.log_handler)
+            self.log_handler = None
+            
+            # 작업 완료 시그널 발생
             self.finished.emit()
 
     def stop(self):
@@ -576,21 +585,43 @@ class MainWindow(QMainWindow):
         self.status_label.setText(TRANSLATIONS[self.current_language]['status_ready'])
 
     def setup_logging(self):
-        """GUI 로깅 설정"""
-        # 출력 함수
-        log_output_func = lambda msg: self.log_output.append(msg)
+        """로깅 설정"""
+        # 로그 출력용 텍스트 에디터
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.log_text.setMaximumBlockCount(1000)  # 로그 항목 수 제한
         
-        if HAVE_UTILS:
-            # 향상된 로깅 사용
-            self.log_handler = logger_utils.QtLogHandler(log_output_func)
-            self.log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        else:
-            # 기존 로깅 사용
-            self.log_handler = LogHandler(log_output_func)
-            self.log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        # 로그 처리 함수
+        def append_log(message):
+            try:
+                # 메인 스레드에서 실행 중인지 확인
+                if QThread.currentThread() == QApplication.instance().thread():
+                    # 직접 로그 추가
+                    self.log_text.append(message)
+                else:
+                    # 다른 스레드에서는 메인 스레드에 작업 요청
+                    QMetaObject.invokeMethod(
+                        self.log_text, 
+                        "append", 
+                        Qt.ConnectionType.QueuedConnection,
+                        Q_ARG(str, message)
+                    )
+            except Exception:
+                # 로그 표시 중 오류가 발생해도 앱은 계속 실행
+                pass
         
-        # 로거에 핸들러 추가
+        # 로그 핸들러 생성 및 설정
+        self.log_handler = LogHandler(append_log)
+        self.log_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+        
+        # 로그 핸들러 등록
+        logger = logging.getLogger()
         logger.addHandler(self.log_handler)
+        
+        # UI에 로그 창 추가
+        self.tab1_layout.addWidget(QLabel(TRANSLATIONS[self.current_language]['logs']))
+        self.tab1_layout.addWidget(self.log_text)
 
 def main():
     app = QApplication(sys.argv)
