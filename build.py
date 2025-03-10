@@ -82,6 +82,61 @@ def get_icon_path():
     logger.warning("No icon file found. Building without an icon.")
     return None
 
+def prepare_ffmpeg():
+    """ffmpeg와 ffprobe를 준비하고 bin 디렉토리를 생성합니다.
+    
+    Returns:
+        tuple: (성공 여부, 메시지)
+    """
+    try:
+        # bin 디렉토리가 없으면 생성
+        bin_dir = Path('bin')
+        bin_dir.mkdir(exist_ok=True)
+        
+        # ffmpeg_utils 모듈 import 시도
+        try:
+            sys.path.append(os.getcwd())
+            import ffmpeg_utils
+            
+            # ffmpeg 다운로드
+            logger.info("FFmpeg 확인 및 다운로드 중...")
+            ffmpeg_path = ffmpeg_utils.get_ffmpeg_executable()
+            if not ffmpeg_path:
+                logger.error("FFmpeg를 찾거나 다운로드할 수 없습니다.")
+                return False, "FFmpeg 다운로드 실패"
+            
+            # ffmpeg가 bin 디렉토리에 없으면 복사
+            if not str(ffmpeg_path).startswith(str(bin_dir)):
+                target_name = "ffmpeg.exe" if platform.system() == "Windows" else "ffmpeg"
+                target_path = bin_dir / target_name
+                shutil.copy2(ffmpeg_path, target_path)
+                # 실행 권한 부여
+                if platform.system() != "Windows":
+                    os.chmod(target_path, 0o755)
+                logger.info(f"FFmpeg 복사됨: {target_path}")
+            
+            # ffprobe도 동일하게 처리
+            ffprobe_path = ffmpeg_utils.get_ffprobe_executable()
+            if ffprobe_path:
+                if not str(ffprobe_path).startswith(str(bin_dir)):
+                    target_name = "ffprobe.exe" if platform.system() == "Windows" else "ffprobe"
+                    target_path = bin_dir / target_name
+                    shutil.copy2(ffprobe_path, target_path)
+                    # 실행 권한 부여
+                    if platform.system() != "Windows":
+                        os.chmod(target_path, 0o755)
+                    logger.info(f"FFprobe 복사됨: {target_path}")
+            
+            return True, "FFmpeg 준비 완료"
+            
+        except ImportError:
+            logger.warning("ffmpeg_utils 모듈을 임포트할 수 없습니다. FFmpeg 자동 다운로드를 건너뜁니다.")
+            return True, "FFmpeg 준비 생략됨"
+            
+    except Exception as e:
+        logger.error(f"FFmpeg 준비 중 오류 발생: {e}")
+        return False, f"FFmpeg 준비 오류: {e}"
+
 def build_application():
     """Build the application using PyInstaller"""
     logger.info("Starting build...")
@@ -91,6 +146,10 @@ def build_application():
     
     # 이전 빌드 파일 정리
     clean_build()
+    
+    # FFmpeg 준비
+    ffmpeg_success, ffmpeg_message = prepare_ffmpeg()
+    logger.info(ffmpeg_message)
     
     # 아이콘 경로 찾기
     icon_path = get_icon_path()
@@ -104,6 +163,11 @@ def build_application():
         '--name', 'batch_subs_gemini',
         '--add-data', f'icons{os.pathsep}icons',
     ]
+    
+    # bin 디렉토리가 있으면 추가
+    bin_dir = Path('bin')
+    if bin_dir.exists() and any(bin_dir.iterdir()):
+        cmd.extend(['--add-data', f'bin{os.pathsep}bin'])
     
     # 아이콘이 있는 경우 추가
     if icon_path:
@@ -119,6 +183,9 @@ def build_application():
         'google.api_core',
         'google.auth',
         'srt',
+        'requests',  # ffmpeg_utils에서 사용
+        'ffmpeg_utils',  # 자체 모듈
+        'subtitle_utils',  # 자체 모듈
     ]
     
     for hidden_import in hidden_imports:
