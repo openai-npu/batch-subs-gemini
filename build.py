@@ -186,6 +186,9 @@ def build_application():
         'requests',  # ffmpeg_utils에서 사용
         'ffmpeg_utils',  # 자체 모듈
         'subtitle_utils',  # 자체 모듈
+        'logger_utils',  # 새로 추가된 로깅 유틸리티
+        'queue',  # 필요한 기본 모듈
+        'threading',  # 필요한 기본 모듈
     ]
     
     for hidden_import in hidden_imports:

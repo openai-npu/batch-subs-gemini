@@ -25,16 +25,24 @@ import gemini_srt_translator as gst
 try:
     import ffmpeg_utils
     import subtitle_utils
+    import logger_utils
     HAVE_UTILS = True
 except ImportError:
     HAVE_UTILS = False
 
 # 로깅 설정
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+if HAVE_UTILS:
+    logger = logger_utils.setup_logging(
+        log_level=logging.INFO,
+        log_file="gemini_srt_gui.log"
+    )
+else:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    logger = logging.getLogger()
 
 # 다국어 지원을 위한 번역 딕셔너리
 TRANSLATIONS = {
@@ -141,14 +149,34 @@ def translate_subtitle(srt_file):
         logging.error(f"[번역 에러] {os.path.basename(srt_file)} 처리 중 에러 발생: {ex}")
         return False
 
+# 향상된 로깅 핸들러 (기존 코드와의 호환성 유지)
 class LogHandler(logging.Handler):
     def __init__(self, signal):
         super().__init__()
         self.signal = signal
-
+        self.safe_handler = None
+        
+        # 새 유틸리티 사용 가능한 경우
+        if HAVE_UTILS:
+            self.safe_handler = logger_utils.QtLogHandler(signal)
+    
     def emit(self, record):
-        msg = self.format(record)
-        self.signal.emit(msg)
+        # 새 로깅 시스템 사용
+        if self.safe_handler:
+            # 이미 안전한 핸들러가 처리하므로 여기서는 아무 것도 하지 않음
+            return
+            
+        # 레거시 방식 폴백
+        try:
+            msg = self.format(record)
+            self.signal(msg)
+        except Exception as e:
+            # 오류 시 빈 함수 객체 확인
+            if callable(self.signal):
+                try:
+                    self.signal(f"로깅 오류: {e}")
+                except:
+                    pass  # 마지막 시도도 실패하면 무시
 
 class TranslationWorker(QThread):
     progress = pyqtSignal(int)
@@ -163,12 +191,21 @@ class TranslationWorker(QThread):
         self.model = model
         self.is_running = True
         self.preferred_languages = ['eng', 'en']  # 영어 자막 우선
+        self.log_handler = None
 
     def run(self):
         # 로깅 핸들러 설정
-        handler = LogHandler(self.log)
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        logging.getLogger().addHandler(handler)
+        if HAVE_UTILS:
+            # 향상된 Qt 로깅 핸들러 사용
+            self.log_handler = logger_utils.QtLogHandler()
+            self.log_handler.connect_signal(self.log.emit)
+            self.log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logger.addHandler(self.log_handler)
+        else:
+            # 기존 로그 핸들러 사용
+            self.log_handler = LogHandler(self.log.emit)
+            self.log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logger.addHandler(self.log_handler)
         
         try:
             # ffmpeg 확인 및 다운로드 (필요한 경우)
@@ -239,7 +276,11 @@ class TranslationWorker(QThread):
         except Exception as e:
             self.log.emit(f"Error: {str(e)}")
         finally:
-            logging.getLogger().removeHandler(handler)
+            # 로깅 핸들러 제거
+            if self.log_handler:
+                logger.removeHandler(self.log_handler)
+                if HAVE_UTILS and hasattr(self.log_handler, 'disconnect_signal'):
+                    self.log_handler.disconnect_signal(self.log.emit)
             self.finished.emit()
 
     def stop(self):
@@ -380,10 +421,21 @@ class MainWindow(QMainWindow):
             self.log_output.append(f"모델 로드 중 오류 발생: {str(e)}")
 
     def setup_logging(self):
-        self.logger = logging.getLogger()
-        self.log_handler = LogHandler(lambda msg: self.log_output.append(msg))
-        self.log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        self.logger.addHandler(self.log_handler)
+        """GUI 로깅 설정"""
+        # 출력 함수
+        log_output_func = lambda msg: self.log_output.append(msg)
+        
+        if HAVE_UTILS:
+            # 향상된 로깅 사용
+            self.log_handler = logger_utils.QtLogHandler(log_output_func)
+            self.log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        else:
+            # 기존 로깅 사용
+            self.log_handler = LogHandler(log_output_func)
+            self.log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        
+        # 로거에 핸들러 추가
+        logger.addHandler(self.log_handler)
 
 def main():
     app = QApplication(sys.argv)
