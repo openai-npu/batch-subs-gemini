@@ -15,11 +15,15 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QLabel, QLineEdit, QComboBox, QFileDialog, 
     QProgressBar, QTextEdit, QGroupBox, QTabWidget, QMessageBox,
-    QCheckBox, QSpinBox
+    QCheckBox, QSpinBox, QStatusBar
 )
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QSize, QMetaObject, Q_ARG
-from PyQt6.QtGui import QIcon, QFont
+from PyQt6.QtGui import QIcon, QFont, QTextCursor
 import gemini_srt_translator as gst
+import platform
+import tempfile
+import traceback
+from datetime import datetime
 
 # 자체 모듈 import (없으면 패스)
 try:
@@ -61,6 +65,10 @@ TRANSLATIONS = {
         'status_processing': 'Processing file {current} of {total}',
         'status_completed': 'All files processed',
         'status_ready': 'Ready',
+        'error_no_api_key': 'Please enter the API key first',
+        'loading_models': 'Loading model list...',
+        'models_loaded': 'Model list loaded',
+        'status_error': 'Error',
     },
     'ko': {
         'title': '자막 일괄 번역기',
@@ -77,6 +85,10 @@ TRANSLATIONS = {
         'status_processing': '파일 처리 중 ({current}/{total})',
         'status_completed': '모든 파일 처리 완료',
         'status_ready': '준비',
+        'error_no_api_key': '먼저 API 키를 입력해주세요',
+        'loading_models': '모델 목록 로딩 중...',
+        'models_loaded': '모델 목록 로드 완료',
+        'status_error': '오류 발생',
     }
 }
 
@@ -296,12 +308,76 @@ class TranslationWorker(QThread):
         self.is_running = False
 
 class MainWindow(QMainWindow):
+    """메인 윈도우 클래스"""
     def __init__(self):
-        super().__init__()
-        self.current_language = 'ko'  # 기본 언어를 한국어로 설정
-        self.init_ui()
-        self.setup_logging()
-        self.load_models()
+        try:
+            print("MainWindow 초기화 시작...")
+            super().__init__()
+            
+            # 기본 UI 구성요소 설정
+            print("UI 구성 설정 중...")
+            self.setWindowTitle("Gemini-SRT 번역기")
+            self.setMinimumSize(800, 600)
+            
+            # 메인 위젯 및 레이아웃 설정
+            self.main_widget = QWidget()
+            self.setCentralWidget(self.main_widget)
+            self.main_layout = QVBoxLayout(self.main_widget)
+            
+            # 메뉴바 설정
+            self.setup_menu()
+            print("메뉴 설정 완료")
+            
+            # 상태바 설정
+            self.status_bar = QStatusBar()
+            self.setStatusBar(self.status_bar)
+            
+            # 로그 창과 로깅 설정
+            print("로깅 설정 중...")
+            self.setup_logging()
+            print("로깅 설정 완료")
+            
+            # 폰트 설정
+            self.setup_fonts()
+            
+            # 중앙 레이아웃 설정 (탭 추가)
+            self.setup_tabs()
+            print("탭 설정 완료")
+            
+            # 번역 모델 설정
+            print("번역 모델 로딩 중...")
+            self.setup_translation_model()
+            print("번역 모델 로딩 완료")
+            
+            # 모델 선택 콤보박스 설정 (모델이 준비된 후 설정해야 함)
+            self.setup_model_selection()
+            
+            # 윈도우 위치 및 크기 복원
+            self.restore_window_state()
+            
+            # 작업자 스레드 준비
+            self.worker = None
+            self.worker_thread = None
+            
+            # 프로그레스바 설정
+            self.progress_bar = QProgressBar()
+            self.status_bar.addPermanentWidget(self.progress_bar)
+            self.progress_bar.setVisible(False)
+            
+            print("MainWindow 초기화 완료")
+        except Exception as e:
+            print(f"MainWindow 초기화 중 오류 발생: {e}")
+            # 디버그 로그에 오류 기록 시도
+            try:
+                debug_log_path = os.path.expanduser("~/Documents/gui_init_error.log")
+                with open(debug_log_path, "w", encoding="utf-8") as f:
+                    f.write(f"초기화 오류 시간: {datetime.now()}\n")
+                    f.write(f"오류: {str(e)}\n")
+                    f.write(traceback.format_exc())
+            except:
+                pass
+            # 예외를 다시 발생시켜 메인에서 처리하도록 함
+            raise
 
     def init_ui(self):
         self.setWindowTitle(TRANSLATIONS[self.current_language]['title'])
@@ -407,13 +483,72 @@ class MainWindow(QMainWindow):
         self.status_label.setText(TRANSLATIONS[self.current_language]['status_ready'])
 
     def change_language(self, index):
-        self.current_language = 'en' if index == 0 else 'ko'
-        self.update_texts()
+        try:
+            self.current_language = 'en' if index == 0 else 'ko'
+            self.update_texts()
+        except Exception as e:
+            logger.error(f"언어 변경 중 오류: {str(e)}")
+            QMessageBox.critical(self, "오류", f"언어 변경 중 오류 발생: {str(e)}")
+            # 언어 설정을 기본값으로 복원
+            self.current_language = 'ko'
+            if hasattr(self, 'lang_combo'):
+                self.lang_combo.setCurrentIndex(1)  # 한국어 선택
 
     def update_texts(self):
-        self.setWindowTitle(TRANSLATIONS[self.current_language]['title'])
-        # 나머지 UI 요소들의 텍스트 업데이트
-        self.status_label.setText(TRANSLATIONS[self.current_language]['status_ready'])
+        try:
+            # 안전하게 번역 텍스트 가져오기
+            def safe_get_text(key, default=""):
+                try:
+                    return self.get_translation(key)
+                except Exception:
+                    return default
+            
+            # 윈도우 타이틀 업데이트
+            self.setWindowTitle(safe_get_text('title', 'SRT 번역기'))
+            
+            # 각 UI 요소 업데이트 - 요소가 존재하는지 확인 후 진행
+            if hasattr(self, 'api_label'):
+                self.api_label.setText(safe_get_text('api_key', 'API 키:'))
+            
+            if hasattr(self, 'srt_label'):
+                self.srt_label.setText(safe_get_text('srt_file', 'SRT 파일:'))
+            
+            if hasattr(self, 'model_label'):
+                self.model_label.setText(safe_get_text('model', '번역 모델:'))
+            
+            if hasattr(self, 'browse_btn'):
+                self.browse_btn.setText(safe_get_text('browse', '찾아보기'))
+            
+            if hasattr(self, 'translate_btn'):
+                self.translate_btn.setText(safe_get_text('translate', '번역'))
+            
+            if hasattr(self, 'get_models_btn'):
+                self.get_models_btn.setText(safe_get_text('get_models', '모델 목록 조회'))
+            
+            # 탭 이름 업데이트
+            if hasattr(self, 'tab_widget'):
+                for i, key in enumerate(['tab_main', 'tab_settings']):
+                    if i < self.tab_widget.count():
+                        self.tab_widget.setTabText(i, safe_get_text(key, f'탭 {i+1}'))
+            
+            # 상태 표시줄 업데이트
+            if hasattr(self, 'status_label'):
+                self.status_label.setText(safe_get_text('status_ready', '준비됨'))
+            
+        except Exception as e:
+            logger.error(f"텍스트 업데이트 중 오류: {str(e)}")
+            # 기본 언어로 복원
+            self.current_language = 'ko'
+
+    # 번역 텍스트를 안전하게 가져오는 헬퍼 메서드 추가
+    def get_translation(self, key, default=None):
+        try:
+            value = TRANSLATIONS.get(self.current_language, {}).get(key)
+            if value is None and default is not None:
+                return default
+            return value or key
+        except Exception:
+            return default or key
 
     def load_models(self):
         try:
@@ -434,50 +569,193 @@ class MainWindow(QMainWindow):
 
     def setup_logging(self):
         """로깅 설정"""
-        # 로그 출력용 텍스트 에디터
+        # 로그 출력 텍스트 창 생성
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-        self.log_text.setMaximumBlockCount(1000)  # 로그 항목 수 제한
         
-        # 로그 처리 함수
+        # log_output 변수가 많은 곳에서 사용되고 있으므로 log_text에 대한 별칭으로 추가
+        self.log_output = self.log_text
+        
+        # 로그 창 설정
+        log_layout = QVBoxLayout()
+        log_label = QLabel(TRANSLATIONS[self.current_language]['log'])
+        log_layout.addWidget(log_label)
+        log_layout.addWidget(self.log_text)
+        
+        # 로그 처리 함수 정의
         def append_log(message):
             try:
                 # 메인 스레드에서 실행 중인지 확인
                 if QThread.currentThread() == QApplication.instance().thread():
-                    # 직접 로그 추가
+                    # 메인 스레드면 직접 추가
                     self.log_text.append(message)
+                    
+                    # 문서 크기 제한 (1000줄로 제한)
+                    doc = self.log_text.document()
+                    if doc.blockCount() > 1000:
+                        # 초과분 제거
+                        cursor = QTextCursor(doc)
+                        cursor.movePosition(QTextCursor.MoveOperation.Start)
+                        cursor.movePosition(
+                            QTextCursor.MoveOperation.Down,
+                            QTextCursor.MoveMode.KeepAnchor, 
+                            doc.blockCount() - 1000
+                        )
+                        cursor.removeSelectedText()
                 else:
-                    # 다른 스레드에서는 메인 스레드에 작업 요청
+                    # 다른 스레드면 메인 스레드로 전달
                     QMetaObject.invokeMethod(
-                        self.log_text, 
-                        "append", 
+                        self.log_text,
+                        "append",
                         Qt.ConnectionType.QueuedConnection,
                         Q_ARG(str, message)
                     )
-            except Exception:
-                # 로그 표시 중 오류가 발생해도 앱은 계속 실행
+            except Exception as e:
+                print(f"로그 표시 중 오류: {str(e)}")
+                # 오류가 발생해도 앱 실행 유지
                 pass
-        
+                
         # 로그 핸들러 생성 및 설정
         self.log_handler = LogHandler(append_log)
-        self.log_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
-        
-        # 로그 핸들러 등록
-        logger = logging.getLogger()
+        self.log_handler.setFormatter(logging.Formatter('%(message)s'))
         logger.addHandler(self.log_handler)
         
-        # UI에 로그 창 추가
-        log_layout = QVBoxLayout()
-        log_layout.addWidget(QLabel(TRANSLATIONS[self.current_language]['log']))
-        log_layout.addWidget(self.log_text)
-        self.layout().addLayout(log_layout)
+        return log_layout
+
+    def fetch_models(self):
+        try:
+            api_key = self.api_input.text()
+            if not api_key:
+                QMessageBox.warning(
+                    self, 
+                    "Error", 
+                    self.get_translation('error_no_api_key', '먼저 API 키를 입력해주세요')
+                )
+                return
+            
+            self.status_label.setText(self.get_translation('loading_models', '모델 목록 로딩 중...'))
+            self.get_models_btn.setEnabled(False)
+            
+            # 모델 로드 스레드 시작
+            self.model_loader = ModelLoaderWorker(api_key)
+            self.model_loader.models_loaded.connect(self.on_models_loaded)
+            self.model_loader.error.connect(self.on_model_load_error)
+            self.model_loader.start()
+        except Exception as e:
+            logger.error(f"모델 목록 조회 중 오류: {str(e)}")
+            if hasattr(self, 'get_models_btn'):
+                self.get_models_btn.setEnabled(True)
+            if hasattr(self, 'log_output'):
+                self.log_output.append(f"오류: {str(e)}")
+            QMessageBox.critical(self, "오류", f"모델 목록 조회 중 오류 발생: {str(e)}")
+    
+    def on_models_loaded(self, models):
+        try:
+            if not hasattr(self, 'model_combo') or not self.model_combo:
+                logger.error("model_combo가 초기화되지 않았습니다")
+                return
+                
+            self.model_combo.clear()
+            self.model_combo.addItems(models)
+            
+            if hasattr(self, 'status_label') and self.status_label:
+                self.status_label.setText(self.get_translation('models_loaded', '모델 목록 로드 완료'))
+            
+            if hasattr(self, 'get_models_btn'):
+                self.get_models_btn.setEnabled(True)
+            
+            if hasattr(self, 'log_text'):
+                self.log_text.append(self.get_translation('models_loaded', '모델 목록 로드 완료'))
+        except Exception as e:
+            logger.error(f"모델 목록 처리 중 오류: {str(e)}")
+            if hasattr(self, 'get_models_btn'):
+                self.get_models_btn.setEnabled(True)
+    
+    def on_model_load_error(self, error_msg):
+        try:
+            if hasattr(self, 'status_label'):
+                self.status_label.setText(self.get_translation('status_error', '오류 발생'))
+            
+            if hasattr(self, 'get_models_btn'):
+                self.get_models_btn.setEnabled(True)
+            
+            if hasattr(self, 'log_output'):
+                self.log_output.append(f"Error: {error_msg}")
+            
+            QMessageBox.warning(self, "Error", error_msg)
+        except Exception as e:
+            logger.error(f"모델 로드 오류 처리 중 예외 발생: {str(e)}")
+            QMessageBox.critical(self, "오류", f"예기치 않은 오류가 발생했습니다: {str(e)}")
 
 def main():
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    """애플리케이션 메인 함수"""
+    print(f"애플리케이션 시작: {datetime.now()}")
+    print(f"Python 버전: {sys.version}")
+    print(f"플랫폼: {sys.platform}")
+    
+    try:
+        # QApplication 인스턴스 생성
+        print("QApplication 생성 중...")
+        app = QApplication(sys.argv)
+        print("QApplication 생성 완료")
+        
+        # 아이콘 설정 시도
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons", "icon.svg")
+        if os.path.exists(icon_path):
+            print(f"아이콘 로딩: {icon_path}")
+            app.setWindowIcon(QIcon(icon_path))
+        else:
+            print(f"아이콘 파일 없음: {icon_path}")
+        
+        # 메인 윈도우 생성
+        print("메인 윈도우 생성 중...")
+        window = MainWindow()
+        print("메인 윈도우 생성 완료")
+        
+        # 애플리케이션 보여주기
+        print("윈도우 표시 중...")
+        window.show()
+        print("윈도우 표시 완료")
+        
+        # 이벤트 루프 시작
+        print("이벤트 루프 시작")
+        return app.exec()
+    except Exception as e:
+        # 치명적 오류 로깅
+        error_traceback = traceback.format_exc()
+        error_message = f"치명적 오류: {str(e)}\n{error_traceback}"
+        print(error_message)
+        
+        try:
+            # 오류 로그 파일에 기록
+            log_dir = os.path.expanduser("~/Documents")
+            if not os.path.exists(log_dir):
+                log_dir = tempfile.gettempdir()
+                
+            error_log_path = os.path.join(log_dir, "gemini_srt_error.log")
+            
+            with open(error_log_path, "w", encoding="utf-8") as f:
+                f.write(f"오류 발생 시간: {datetime.now()}\n")
+                f.write(error_message)
+            
+            # 가능하면 메시지 박스 표시
+            try:
+                app = QApplication.instance()
+                if not app:
+                    app = QApplication(sys.argv)
+                msg_box = QMessageBox()
+                msg_box.setIcon(QMessageBox.Icon.Critical)
+                msg_box.setWindowTitle("오류 발생")
+                msg_box.setText(f"애플리케이션 시작 중 오류가 발생했습니다.\n오류 로그가 {error_log_path}에 저장되었습니다.")
+                msg_box.setDetailedText(error_message)
+                msg_box.exec()
+            except:
+                pass
+        except:
+            pass
+        
+        return 1
 
-if __name__ == '__main__':
-    main() 
+if __name__ == "__main__":
+    sys.exit(main()) 

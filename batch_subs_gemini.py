@@ -19,8 +19,12 @@ from PyQt6.QtWidgets import (
     QCheckBox, QSpinBox, QRadioButton, QButtonGroup
 )
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QSize, QMetaObject, Q_ARG
-from PyQt6.QtGui import QIcon, QFont
+from PyQt6.QtGui import QIcon, QFont, QTextCursor
 import gemini_srt_translator as gst
+import platform
+import traceback
+import locale
+from datetime import datetime
 
 # 자체 모듈 import (없으면 패스)
 try:
@@ -57,6 +61,7 @@ TRANSLATIONS = {
         'start': 'Start Translation',
         'progress': 'Progress:',
         'log': 'Log:',
+        'logs': 'Logs:',
         'language': 'Language: ',
         'select_folder': 'Select a folder',
         'select_file': 'Select a file',
@@ -71,6 +76,7 @@ TRANSLATIONS = {
         'status_ready': 'Ready',
         'loading_models': 'Loading models...',
         'models_loaded': 'Models loaded successfully',
+        'tab_main': 'Main Features',
     },
     'ko': {
         'title': '자막 일괄 번역기',
@@ -82,6 +88,7 @@ TRANSLATIONS = {
         'start': '번역 시작',
         'progress': '진행 상황:',
         'log': '로그:',
+        'logs': '로그:',
         'language': '언어: ',
         'select_folder': '폴더 선택',
         'select_file': '파일 선택',
@@ -96,6 +103,7 @@ TRANSLATIONS = {
         'status_ready': '준비',
         'loading_models': '모델 목록 로딩 중...',
         'models_loaded': '모델 목록 로드 완료',
+        'tab_main': '메인 기능',
     }
 }
 
@@ -376,6 +384,15 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
 
+        # 탭 위젯 생성
+        self.tab_widget = QTabWidget()
+        layout.addWidget(self.tab_widget)
+        
+        # 탭1 - 메인 기능
+        self.tab1 = QWidget()
+        self.tab1_layout = QVBoxLayout(self.tab1)
+        self.tab_widget.addTab(self.tab1, TRANSLATIONS[self.current_language]['tab_main'])
+        
         # 언어 선택
         lang_layout = QHBoxLayout()
         lang_label = QLabel(TRANSLATIONS[self.current_language]['language'])
@@ -386,7 +403,7 @@ class MainWindow(QMainWindow):
         lang_layout.addWidget(lang_label)
         lang_layout.addWidget(self.lang_combo)
         lang_layout.addStretch()
-        layout.addLayout(lang_layout)
+        self.tab1_layout.addLayout(lang_layout)
 
         # API 키 입력
         api_layout = QHBoxLayout()
@@ -394,7 +411,7 @@ class MainWindow(QMainWindow):
         self.api_input = QLineEdit()
         api_layout.addWidget(self.api_label)
         api_layout.addWidget(self.api_input)
-        layout.addLayout(api_layout)
+        self.tab1_layout.addLayout(api_layout)
         
         # 보조 API 키 입력
         api2_layout = QHBoxLayout()
@@ -402,7 +419,7 @@ class MainWindow(QMainWindow):
         self.api2_input = QLineEdit()
         api2_layout.addWidget(self.api2_label)
         api2_layout.addWidget(self.api2_input)
-        layout.addLayout(api2_layout)
+        self.tab1_layout.addLayout(api2_layout)
 
         # 폴더/파일 선택 라디오 버튼
         radio_layout = QHBoxLayout()
@@ -416,7 +433,7 @@ class MainWindow(QMainWindow):
         radio_layout.addWidget(self.folder_radio)
         radio_layout.addWidget(self.file_radio)
         radio_layout.addStretch()
-        layout.addLayout(radio_layout)
+        self.tab1_layout.addLayout(radio_layout)
 
         # 입력 경로 선택
         folder_layout = QHBoxLayout()
@@ -427,7 +444,7 @@ class MainWindow(QMainWindow):
         folder_layout.addWidget(self.folder_label)
         folder_layout.addWidget(self.folder_input)
         folder_layout.addWidget(self.browse_btn)
-        layout.addLayout(folder_layout)
+        self.tab1_layout.addLayout(folder_layout)
 
         # 모델 선택
         model_layout = QHBoxLayout()
@@ -438,7 +455,7 @@ class MainWindow(QMainWindow):
         model_layout.addWidget(self.model_label)
         model_layout.addWidget(self.model_combo)
         model_layout.addWidget(self.get_models_btn)
-        layout.addLayout(model_layout)
+        self.tab1_layout.addLayout(model_layout)
 
         # 시작 버튼
         button_layout = QHBoxLayout()
@@ -446,7 +463,7 @@ class MainWindow(QMainWindow):
         self.start_btn.clicked.connect(self.start_translation)
         button_layout.addStretch()
         button_layout.addWidget(self.start_btn)
-        layout.addLayout(button_layout)
+        self.tab1_layout.addLayout(button_layout)
 
         # 진행 상태바
         progress_layout = QHBoxLayout()
@@ -454,20 +471,11 @@ class MainWindow(QMainWindow):
         self.progress_bar = QProgressBar()
         progress_layout.addWidget(self.progress_label)
         progress_layout.addWidget(self.progress_bar)
-        layout.addLayout(progress_layout)
+        self.tab1_layout.addLayout(progress_layout)
 
         # 상태 표시줄
         self.status_label = QLabel(TRANSLATIONS[self.current_language]['status_ready'])
-        layout.addWidget(self.status_label)
-
-        # 로그 출력
-        log_layout = QVBoxLayout()
-        self.log_label = QLabel(TRANSLATIONS[self.current_language]['log'])
-        self.log_output = QTextEdit()
-        self.log_output.setReadOnly(True)
-        log_layout.addWidget(self.log_label)
-        log_layout.addWidget(self.log_output)
-        layout.addLayout(log_layout)
+        self.tab1_layout.addWidget(self.status_label)
 
     def toggle_input_mode(self, checked):
         if checked:  # 폴더 모드
@@ -494,36 +502,72 @@ class MainWindow(QMainWindow):
                 self.folder_input.setText(file)
 
     def fetch_models(self):
-        api_key = self.api_input.text()
-        if not api_key:
-            QMessageBox.warning(
-                self, 
-                "Error", 
-                TRANSLATIONS[self.current_language]['error_no_api_key']
-            )
-            return
-        
-        self.status_label.setText(TRANSLATIONS[self.current_language]['loading_models'])
-        self.get_models_btn.setEnabled(False)
-        
-        # 모델 로드 스레드 시작
-        self.model_loader = ModelLoaderWorker(api_key)
-        self.model_loader.models_loaded.connect(self.on_models_loaded)
-        self.model_loader.error.connect(self.on_model_load_error)
-        self.model_loader.start()
+        try:
+            api_key = self.api_input.text()
+            if not api_key:
+                QMessageBox.warning(
+                    self, 
+                    "Error", 
+                    TRANSLATIONS[self.current_language]['error_no_api_key']
+                )
+                return
+            
+            self.status_label.setText(TRANSLATIONS[self.current_language]['loading_models'])
+            self.get_models_btn.setEnabled(False)
+            
+            # 모델 로드 스레드 시작
+            self.model_loader = ModelLoaderWorker(api_key)
+            self.model_loader.models_loaded.connect(self.on_models_loaded)
+            self.model_loader.error.connect(self.on_model_load_error)
+            self.model_loader.start()
+        except Exception as e:
+            logger.error(f"모델 목록 조회 중 오류: {str(e)}")
+            self.get_models_btn.setEnabled(True)
+            if hasattr(self, 'log_text'):
+                self.log_text.append(f"오류: {str(e)}")
+            QMessageBox.critical(self, "오류", f"모델 목록 조회 중 오류 발생: {str(e)}")
     
     def on_models_loaded(self, models):
-        self.model_combo.clear()
-        self.model_combo.addItems(models)
-        self.status_label.setText(TRANSLATIONS[self.current_language]['models_loaded'])
-        self.get_models_btn.setEnabled(True)
-        self.log_output.append(TRANSLATIONS[self.current_language]['models_loaded'])
+        try:
+            if not hasattr(self, 'model_combo') or not self.model_combo:
+                logger.error("model_combo가 초기화되지 않았습니다")
+                return
+                
+            self.model_combo.clear()
+            self.model_combo.addItems(models)
+            
+            if hasattr(self, 'status_label') and self.status_label:
+                current_lang = getattr(self, 'current_language', 'ko')
+                translations = TRANSLATIONS.get(current_lang, TRANSLATIONS['ko'])
+                status_text = translations.get('models_loaded', '모델 목록 로드 완료')
+                self.status_label.setText(status_text)
+            
+            self.get_models_btn.setEnabled(True)
+            
+            if hasattr(self, 'log_text'):
+                current_lang = getattr(self, 'current_language', 'ko')
+                translations = TRANSLATIONS.get(current_lang, TRANSLATIONS['ko'])
+                log_text = translations.get('models_loaded', '모델 목록 로드 완료')
+                self.log_text.append(log_text)
+        except Exception as e:
+            logger.error(f"모델 목록 처리 중 오류: {str(e)}")
+            self.get_models_btn.setEnabled(True)
     
     def on_model_load_error(self, error_msg):
-        self.status_label.setText(TRANSLATIONS[self.current_language]['status_ready'])
-        self.get_models_btn.setEnabled(True)
-        self.log_output.append(f"Error: {error_msg}")
-        QMessageBox.warning(self, "Error", f"Failed to load models: {error_msg}")
+        try:
+            if hasattr(self, 'status_label'):
+                self.status_label.setText(TRANSLATIONS[self.current_language]['status_ready'])
+            
+            if hasattr(self, 'get_models_btn'):
+                self.get_models_btn.setEnabled(True)
+            
+            if hasattr(self, 'log_text'):
+                self.log_text.append(f"Error: {error_msg}")
+            
+            QMessageBox.warning(self, "Error", f"Failed to load models: {error_msg}")
+        except Exception as e:
+            logger.error(f"모델 로드 오류 처리 중 예외 발생: {str(e)}")
+            QMessageBox.critical(self, "오류", f"예기치 않은 오류가 발생했습니다: {str(e)}")
 
     def start_translation(self):
         api_key = self.api_input.text()
@@ -547,7 +591,7 @@ class MainWindow(QMainWindow):
             self.current_language
         )
         self.worker.progress.connect(self.progress_bar.setValue)
-        self.worker.log.connect(self.log_output.append)
+        self.worker.log.connect(self.log_text.append)
         self.worker.status.connect(self.status_label.setText)
         self.worker.finished.connect(self.translation_finished)
         self.worker.start()
@@ -557,32 +601,61 @@ class MainWindow(QMainWindow):
         self.status_label.setText(TRANSLATIONS[self.current_language]['status_ready'])
 
     def change_language(self, index):
-        self.current_language = 'en' if index == 0 else 'ko'
-        self.update_texts()
+        try:
+            self.current_language = 'en' if index == 0 else 'ko'
+            self.update_texts()
+        except Exception as e:
+            logger.error(f"언어 변경 중 오류: {str(e)}")
+            QMessageBox.critical(self, "오류", f"언어 변경 중 오류 발생: {str(e)}")
+            # 언어 설정을 기본값으로 복원
+            self.current_language = 'ko'
+            if hasattr(self, 'lang_combo') and self.lang_combo:
+                self.lang_combo.setCurrentIndex(1)  # 한국어 선택
 
     def update_texts(self):
-        # 윈도우 타이틀 업데이트
-        self.setWindowTitle(TRANSLATIONS[self.current_language]['title'])
-        
-        # 레이블 업데이트
-        self.api_label.setText(TRANSLATIONS[self.current_language]['api_key'])
-        self.api2_label.setText(TRANSLATIONS[self.current_language]['api_key2'])
-        self.folder_label.setText(TRANSLATIONS[self.current_language]['input_folder'])
-        self.model_label.setText(TRANSLATIONS[self.current_language]['model'])
-        self.progress_label.setText(TRANSLATIONS[self.current_language]['progress'])
-        self.log_label.setText(TRANSLATIONS[self.current_language]['log'])
-        
-        # 버튼 텍스트 업데이트
-        self.start_btn.setText(TRANSLATIONS[self.current_language]['start'])
-        self.browse_btn.setText(TRANSLATIONS[self.current_language]['browse'])
-        self.get_models_btn.setText(TRANSLATIONS[self.current_language]['get_models'])
-        
-        # 라디오 버튼 업데이트
-        self.folder_radio.setText(TRANSLATIONS[self.current_language]['folder_option'])
-        self.file_radio.setText(TRANSLATIONS[self.current_language]['file_option'])
-        
-        # 상태 레이블 업데이트
-        self.status_label.setText(TRANSLATIONS[self.current_language]['status_ready'])
+        try:
+            # 윈도우 타이틀 업데이트
+            self.setWindowTitle(TRANSLATIONS[self.current_language]['title'])
+            
+            # 레이블 업데이트
+            if hasattr(self, 'api_label') and self.api_label:
+                self.api_label.setText(TRANSLATIONS[self.current_language]['api_key'])
+            if hasattr(self, 'api2_label') and self.api2_label:
+                self.api2_label.setText(TRANSLATIONS[self.current_language]['api_key2'])
+            if hasattr(self, 'folder_label') and self.folder_label:
+                self.folder_label.setText(TRANSLATIONS[self.current_language]['input_folder'])
+            if hasattr(self, 'model_label') and self.model_label:
+                self.model_label.setText(TRANSLATIONS[self.current_language]['model'])
+            if hasattr(self, 'progress_label') and self.progress_label:
+                self.progress_label.setText(TRANSLATIONS[self.current_language]['progress'])
+            if hasattr(self, 'log_label') and self.log_label:
+                self.log_label.setText(TRANSLATIONS[self.current_language]['log'])
+            
+            # 버튼 텍스트 업데이트
+            if hasattr(self, 'start_btn') and self.start_btn:
+                self.start_btn.setText(TRANSLATIONS[self.current_language]['start'])
+            if hasattr(self, 'browse_btn') and self.browse_btn:
+                self.browse_btn.setText(TRANSLATIONS[self.current_language]['browse'])
+            if hasattr(self, 'get_models_btn') and self.get_models_btn:
+                self.get_models_btn.setText(TRANSLATIONS[self.current_language]['get_models'])
+            
+            # 탭 타이틀 업데이트
+            if hasattr(self, 'tab_widget') and self.tab_widget and hasattr(self, 'tab1'):
+                self.tab_widget.setTabText(0, TRANSLATIONS[self.current_language]['tab_main'])
+                
+            # 라디오 버튼 업데이트
+            if hasattr(self, 'folder_radio') and self.folder_radio:
+                self.folder_radio.setText(TRANSLATIONS[self.current_language]['folder_option'])
+            if hasattr(self, 'file_radio') and self.file_radio:
+                self.file_radio.setText(TRANSLATIONS[self.current_language]['file_option'])
+            
+            # 상태 레이블 업데이트
+            if hasattr(self, 'status_label') and self.status_label:
+                self.status_label.setText(TRANSLATIONS[self.current_language]['status_ready'])
+        except Exception as e:
+            logger.error(f"텍스트 업데이트 중 오류: {str(e)}")
+            # 오류 발생 시 기본값으로 복원
+            self.current_language = 'ko'
 
     def setup_logging(self):
         """로깅 설정"""
@@ -590,7 +663,10 @@ class MainWindow(QMainWindow):
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-        self.log_text.setMaximumBlockCount(1000)  # 로그 항목 수 제한
+        # log_output 변수가 많은 곳에서 사용되고 있으므로 log_text에 대한 별칭으로 추가
+        self.log_output = self.log_text
+        # 윈도우와의 호환성을 위해 setMaximumBlockCount 대신 다른 방식으로 크기 제한
+        # self.log_text.setMaximumBlockCount(1000)  # 로그 항목 수 제한
         
         # 로그 처리 함수
         def append_log(message):
@@ -599,15 +675,28 @@ class MainWindow(QMainWindow):
                 if QThread.currentThread() == QApplication.instance().thread():
                     # 직접 로그 추가
                     self.log_text.append(message)
+                    
+                    # 문서 크기 제한 (1000줄로 제한)
+                    doc = self.log_text.document()
+                    if doc.blockCount() > 1000:
+                        # 초과분을 제거하기 위한 커서 설정
+                        cursor = QTextCursor(doc)
+                        cursor.movePosition(QTextCursor.MoveOperation.Start)
+                        cursor.movePosition(
+                            QTextCursor.MoveOperation.Down,
+                            QTextCursor.MoveMode.KeepAnchor, 
+                            doc.blockCount() - 1000
+                        )
+                        cursor.removeSelectedText()
                 else:
-                    # 다른 스레드에서는 메인 스레드에 작업 요청
+                    # 다른 스레드에서 호출된 경우, 메인 스레드로 전달
                     QMetaObject.invokeMethod(
                         self.log_text, 
                         "append", 
                         Qt.ConnectionType.QueuedConnection,
                         Q_ARG(str, message)
                     )
-            except Exception:
+            except:
                 # 로그 표시 중 오류가 발생해도 앱은 계속 실행
                 pass
         
@@ -619,15 +708,135 @@ class MainWindow(QMainWindow):
         logger = logging.getLogger()
         logger.addHandler(self.log_handler)
         
-        # UI에 로그 창 추가
-        self.tab1_layout.addWidget(QLabel(TRANSLATIONS[self.current_language]['logs']))
-        self.tab1_layout.addWidget(self.log_text)
+        # UI에 로그 창 추가 (tab1_layout이 있는 경우에만)
+        if hasattr(self, 'tab1_layout'):
+            self.tab1_layout.addWidget(QLabel(TRANSLATIONS[self.current_language]['logs']))
+            self.tab1_layout.addWidget(self.log_text)
+        else:
+            # 중앙 위젯에 직접 추가
+            layout = self.centralWidget().layout()
+            if layout:
+                log_group = QGroupBox(TRANSLATIONS[self.current_language]['logs'])
+                log_layout = QVBoxLayout(log_group)
+                log_layout.addWidget(self.log_text)
+                layout.addWidget(log_group)
+
+def log_debug_info():
+    """앱 시작 시 디버그 정보를 로깅"""
+    try:
+        # 로그 파일 경로 설정
+        log_dir = os.path.expanduser("~/Documents")
+        if not os.path.exists(log_dir):
+            log_dir = tempfile.gettempdir()
+            
+        log_path = os.path.join(log_dir, "debug_startup.log")
+        
+        with open(log_path, "w", encoding="utf-8") as f:
+            # 시스템 정보
+            f.write(f"==== 앱 시작 디버그 로그 ({datetime.now()}) ====\n")
+            f.write(f"Python 버전: {sys.version}\n")
+            f.write(f"플랫폼: {sys.platform}\n")
+            f.write(f"OS: {platform.platform()}\n")
+            f.write(f"Locale: {locale.getdefaultlocale()}\n")
+            
+            # 경로 정보
+            f.write(f"실행 파일: {sys.executable}\n")
+            f.write(f"작업 디렉토리: {os.getcwd()}\n")
+            f.write(f"sys.path: {sys.path}\n")
+            
+            # 모듈 로딩 시도
+            f.write("\n==== 모듈 로딩 시도 ====\n")
+            modules_to_check = [
+                "PyQt6", "google.generativeai", "gemini-api", 
+                "openai", "ffmpeg", "srt", "logger_utils"
+            ]
+            
+            for module in modules_to_check:
+                try:
+                    __import__(module)
+                    f.write(f"{module}: 성공\n")
+                except ImportError as e:
+                    f.write(f"{module}: 실패 - {e}\n")
+                except Exception as e:
+                    f.write(f"{module}: 오류 - {e}\n")
+            
+            # 환경 변수
+            f.write("\n==== 환경 변수 ====\n")
+            for key, value in os.environ.items():
+                if key.startswith(("PYTHONH", "QT_", "PATH", "PYTHONP", "LANG")):
+                    f.write(f"{key}: {value}\n")
+    except Exception as e:
+        print(f"디버그 정보 로깅 실패: {e}")
 
 def main():
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    """애플리케이션 메인 함수"""
+    try:
+        # 시작 시 디버그 정보 로깅
+        log_debug_info()
+        print("애플리케이션 시작 중...")
+        
+        # QApplication 인스턴스 생성
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication(sys.argv)
+        print("QApplication 인스턴스 생성 완료")
+        
+        # 아이콘 설정 (존재하는 경우)
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons", "icon.svg")
+        if os.path.exists(icon_path):
+            print(f"아이콘 로딩: {icon_path}")
+            app.setWindowIcon(QIcon(icon_path))
+        else:
+            print(f"아이콘 파일이 존재하지 않음: {icon_path}")
+        
+        print("메인 윈도우 생성 중...")
+        window = MainWindow()
+        print("메인 윈도우 생성 완료")
+        
+        window.show()
+        print("메인 윈도우 표시됨")
+        
+        print("이벤트 루프 시작")
+        return app.exec()  # main 함수가 app.exec()의 결과를 반환
+    except Exception as e:
+        # 치명적 오류 로깅
+        error_traceback = traceback.format_exc()
+        error_message = f"치명적 오류: {str(e)}\n{error_traceback}"
+        print(error_message)
+        
+        try:
+            # 오류 로그 파일에 기록
+            log_dir = os.path.expanduser("~/Documents")
+            if not os.path.exists(log_dir):
+                log_dir = tempfile.gettempdir()
+                
+            error_log_path = os.path.join(log_dir, "batch_subs_error.log")
+            
+            with open(error_log_path, "w", encoding="utf-8") as f:
+                f.write(f"오류 발생 시간: {datetime.now()}\n")
+                f.write(error_message)
+            
+            # 가능하면 메시지 박스 표시
+            try:
+                # 명시적으로 QApplication과 QMessageBox를 여기서 임포트
+                from PyQt6.QtWidgets import QApplication, QMessageBox
+                
+                # 기존 QApplication 인스턴스가 있으면 사용, 없으면 새로 생성
+                app = QApplication.instance()
+                if app is None:
+                    app = QApplication(sys.argv)
+                    
+                msg_box = QMessageBox()
+                msg_box.setIcon(QMessageBox.Icon.Critical)
+                msg_box.setWindowTitle("오류 발생")
+                msg_box.setText(f"애플리케이션 시작 중 오류가 발생했습니다.\n오류 로그가 {error_log_path}에 저장되었습니다.")
+                msg_box.setDetailedText(error_message)
+                msg_box.exec()
+            except Exception as msg_error:
+                print(f"메시지 박스 표시 중 오류: {msg_error}")
+        except Exception as log_error:
+            print(f"오류 로깅 중 추가 오류: {log_error}")
+        
+        return 1
 
-if __name__ == '__main__':
-    main() 
+if __name__ == "__main__":
+    sys.exit(main()) 
