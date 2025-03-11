@@ -140,6 +140,80 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
 
+      # 맥OS용 런타임 훅 생성
+      - name: Create macOS Runtime Hook
+        if: matrix.os == 'macos-latest'
+        run: |
+          mkdir -p hooks
+          cat > hooks/macos_hook.py << 'EOF'
+          # -*- coding: utf-8 -*-
+          # macOS용 PyInstaller 런타임 훅
+
+          import os
+          import sys
+          import logging
+          import tempfile
+          from pathlib import Path
+
+          # 시작점 디버깅 로그
+          try:
+              # 로그 디렉토리 설정
+              log_dir = os.path.expanduser("~/Documents")
+              if not os.path.exists(log_dir):
+                  log_dir = tempfile.gettempdir()
+                  
+              # 로그 파일 경로
+              log_path = os.path.join(log_dir, "app_startup.log")
+              
+              # 시작 로그 기록
+              with open(log_path, "w", encoding="utf-8") as f:
+                  f.write(f"macOS 앱 시작 로그\n")
+                  f.write(f"Python 경로: {sys.executable}\n")
+                  f.write(f"작업 디렉토리: {os.getcwd()}\n")
+                  f.write(f"sys.path: {sys.path}\n")
+                  
+                  # 환경 변수
+                  f.write("환경 변수:\n")
+                  for key, value in os.environ.items():
+                      if key.startswith(("PYTHON", "DYLD_", "PATH", "QT_")):
+                          f.write(f"{key}: {value}\n")
+              
+              # Qt 백엔드 설정
+              if 'QT_QPA_PLATFORM' not in os.environ:
+                  os.environ['QT_QPA_PLATFORM'] = 'cocoa'
+                  
+              # 경로 설정
+              if getattr(sys, 'frozen', False):
+                  # 앱 번들 경로
+                  bundle_dir = getattr(sys, '_MEIPASS', os.path.abspath(os.path.dirname(sys.executable)))
+                  
+                  # 앱 번들 경로 추가
+                  if bundle_dir not in sys.path:
+                      sys.path.insert(0, bundle_dir)
+                      
+                  # 환경 변수 설정
+                  os.environ['PATH'] = f"{bundle_dir}:{os.environ.get('PATH', '')}"
+                  
+                  # bin 디렉토리가 있으면 PATH에 추가
+                  bin_dir = os.path.join(bundle_dir, 'bin')
+                  if os.path.exists(bin_dir):
+                      os.environ['PATH'] = f"{bin_dir}:{os.environ['PATH']}"
+                      
+                  with open(log_path, "a", encoding="utf-8") as f:
+                      f.write(f"\n경로 설정 완료. 현재 PATH: {os.environ['PATH']}\n")
+          except Exception as e:
+              # 오류 로깅
+              try:
+                  error_path = os.path.expanduser("~/Documents/app_error.log")
+                  with open(error_path, "w", encoding="utf-8") as f:
+                      f.write(f"런타임 훅 오류: {str(e)}\n")
+                      
+                      import traceback
+                      f.write(traceback.format_exc())
+              except:
+                  pass
+          EOF
+
       # 맥OS 빌드 명령
       - name: Build with PyInstaller (macOS)
         if: matrix.os == 'macos-latest'
@@ -150,9 +224,13 @@ jobs:
             --noconfirm \
             --name batch_subs_gemini \
             --add-data "icons:icons" \
+            --runtime-hook hooks/macos_hook.py \
+            --codesign-identity=- \
+            --osx-bundle-identifier=com.user.batchsubsgemini \
             --hidden-import PyQt6.QtCore \
             --hidden-import PyQt6.QtGui \
             --hidden-import PyQt6.QtWidgets \
+            --hidden-import PyQt6.QtDBus \
             --hidden-import google.generativeai \
             --hidden-import google.api_core \
             --hidden-import google.auth \
@@ -163,15 +241,17 @@ jobs:
             --hidden-import logger_utils \
             --hidden-import queue \
             --hidden-import threading \
+            --hidden-import pkg_resources.py2_warn \
             --collect-all google.generativeai \
             --collect-all google.api_core \
             --collect-all google.auth \
             --collect-all srt \
+            --collect-binaries PyQt6 \
             --exclude-module tkinter \
             --exclude-module matplotlib \
             --exclude-module numpy \
             batch_subs_gemini.py
-      
+
       # 맥OS에서 앱 패키징
       - name: Package macOS App
         if: matrix.os == 'macos-latest'

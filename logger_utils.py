@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+from logging.handlers import SysLogHandler
 import os
 import sys
 import logging
@@ -10,8 +11,53 @@ import time
 import re
 from typing import Callable, List, Optional
 from datetime import datetime
-from PyQt6.QtCore import QObject, pyqtSignal, QMetaObject, Qt, Q_ARG, QTimer
 
+# PyQt 관련 import를 안전하게 처리
+try:
+    from PyQt6.QtCore import QObject, Qt, QMetaObject, Q_ARG
+    from PyQt6.QtGui import QTextCursor
+    
+    # pyqtSignal은 별도로 처리 (플랫폼에 따라 import 방식이 다를 수 있음)
+    try:
+        from PyQt6.QtCore import pyqtSignal
+    except ImportError:
+        try:
+            # 일부 환경에서는 이렇게 import해야 할 수도 있음
+            from PyQt6.QtCore import Signal as pyqtSignal
+        except ImportError:
+            print("경고: PyQt6 시그널을 import 할 수 없습니다.")
+            # 더미 클래스 정의
+            class DummySignal:
+                def __init__(self, *args): pass
+                def connect(self, *args): pass
+                def disconnect(self, *args): pass
+                def emit(self, *args): pass
+            
+            pyqtSignal = DummySignal
+    
+    HAVE_QT = True
+    
+    # Qt 객체들을 더 안전하게 만들기
+    class QtLogSignaler(QObject):
+        """Qt 시그널을 발생시키는 로그 시그널러"""
+        try:
+            log_signal = pyqtSignal(str)
+        except Exception as e:
+            print(f"경고: Qt 시그널 생성 실패: {e}")
+            # 대체 시그널 생성
+            log_signal = None
+        
+        def __init__(self):
+            try:
+                super().__init__()
+            except Exception as e:
+                print(f"경고: QtLogSignaler 초기화 실패: {e}")
+except ImportError:
+    HAVE_QT = False
+    class QtLogSignaler:
+        def __init__(self): 
+            self.log_signal = None
+        
 # 싱글톤 로거 매니저
 class LoggerManager:
     _instance = None
@@ -38,6 +84,21 @@ class LoggerManager:
         self._batch_size = 10  # 한 번에 처리할 최대 메시지 수
         self._is_running = False
         self._filter_pattern = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]')  # 제어 문자 필터
+        
+        # 디버그 로그 파일 (앱이 정상 시작되지 않을 경우를 대비)
+        try:
+            log_dir = os.path.expanduser("~/Documents")
+            if not os.path.exists(log_dir):
+                log_dir = os.path.dirname(os.path.abspath(__file__))
+            
+            debug_log_path = os.path.join(log_dir, "logger_debug.log")
+            
+            with open(debug_log_path, "w", encoding="utf-8") as f:
+                f.write(f"LoggerManager 초기화 시간: {time.ctime()}\n")
+                f.write(f"HAVE_QT: {HAVE_QT}\n")
+                f.write(f"플랫폼: {sys.platform}\n")
+        except Exception as e:
+            print(f"로거 디버그 로그 생성 실패: {e}")
     
     def start(self):
         """메시지 처리 스레드 시작"""
@@ -159,29 +220,21 @@ class LoggerManager:
             self._is_running = False
 
 
-# Qt 시그널을 사용하는 로그 핸들러
-class QtLogSignaler(QObject):
-    """Qt 시그널을 발생시키는 로그 시그널러"""
-    log_signal = pyqtSignal(str)
-    
-    def __init__(self):
-        super().__init__()
-
-
-# 로그 핸들러 기본 클래스
+# 기본 로그 핸들러
 class SafeLogHandler(logging.Handler):
-    """스레드 안전한 로그 핸들러"""
+    """안전한 로그 핸들러 기본 클래스"""
     def __init__(self):
         super().__init__()
         self.manager = LoggerManager.instance()
-        
+    
     def emit(self, record):
-        """로그 레코드 처리"""
+        """로그 레코드 방출"""
         try:
-            message = self.format(record)
-            self.manager.add_message(message)
+            msg = self.format(record)
+            # 로거 매니저를 통해 메시지 추가
+            self.manager.add_message(msg)
         except Exception:
-            # 로그 처리 중 오류가 발생해도 애플리케이션은 계속 실행
+            # 오류가 발생해도 앱 중단 방지
             pass
 
 
@@ -190,29 +243,52 @@ class QtLogHandler(SafeLogHandler):
     """Qt GUI 로깅용 핸들러"""
     def __init__(self):
         super().__init__()
-        self.signaler = QtLogSignaler()
-        self._max_text_length = 100000  # 최대 로그 길이
         
+        if not HAVE_QT:
+            print("경고: Qt 모듈이 없어서 로깅에 제한이 있을 수 있습니다.")
+            self.signaler = None
+            return
+            
+        try:
+            self.signaler = QtLogSignaler()
+        except Exception as e:
+            print(f"QtLogHandler 초기화 중 오류: {e}")
+            self.signaler = None
+    
     def connect_signal(self, slot_function):
         """시그널과 슬롯 연결"""
+        if not HAVE_QT or self.signaler is None or self.signaler.log_signal is None:
+            print("경고: Qt 시그널을 연결할 수 없습니다.")
+            return False
+            
         try:
             self.signaler.log_signal.connect(slot_function, Qt.ConnectionType.QueuedConnection)
             
             # 로그 소비자로 안전한 시그널 방출 함수 등록
             self.manager.register_consumer(self._emit_signal_safely)
-        except Exception:
-            pass
+            return True
+        except Exception as e:
+            print(f"시그널 연결 실패: {e}")
+            return False
     
     def disconnect_signal(self, slot_function):
         """시그널과 슬롯 연결 해제"""
+        if not HAVE_QT or self.signaler is None or self.signaler.log_signal is None:
+            return False
+            
         try:
             self.signaler.log_signal.disconnect(slot_function)
             self.manager.unregister_consumer(self._emit_signal_safely)
-        except Exception:
-            pass
+            return True
+        except Exception as e:
+            print(f"시그널 연결 해제 실패: {e}")
+            return False
     
     def _emit_signal_safely(self, message):
         """안전하게 시그널 방출 (메인 스레드로 전달)"""
+        if not HAVE_QT or self.signaler is None or self.signaler.log_signal is None:
+            return
+            
         try:
             # 메인 스레드에서 시그널 방출
             QMetaObject.invokeMethod(
@@ -221,8 +297,12 @@ class QtLogHandler(SafeLogHandler):
                 Qt.ConnectionType.QueuedConnection,
                 Q_ARG(str, message)
             )
-        except Exception:
-            pass
+        except Exception as e:
+            # 직접 시그널 방출 시도
+            try:
+                self.signaler.log_signal.emit(message)
+            except Exception as e2:
+                print(f"시그널 방출 실패: {e2}")
 
 
 # 파일 로그 핸들러 (로그 파일 자동 회전)

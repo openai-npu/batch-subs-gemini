@@ -1,0 +1,36 @@
+# 빌드 산출물
+build/
+dist/
+*.spec
+
+# Python 캐시 파일
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 로그 파일
+*.log
+
+# 가상 환경
+venv/
+.env/
+.venv/
+env/
+ENV/
+bin/
+
+# 시스템 파일
+.DS_Store
+Thumbs.db
+
+# IDE 파일
+.idea/
+.vscode/
+*.swp
+*.swo 

@@ -137,6 +137,117 @@ def prepare_ffmpeg():
         logger.error(f"FFmpeg 준비 중 오류 발생: {e}")
         return False, f"FFmpeg 준비 오류: {e}"
 
+def create_runtime_hooks():
+    """PyInstaller 런타임 훅 생성"""
+    try:
+        hooks_dir = Path('hooks')
+        hooks_dir.mkdir(exist_ok=True)
+        
+        # macOS용 런타임 훅
+        if platform.system() == 'Darwin':
+            macos_hook_path = hooks_dir / 'macos_runtime_hook.py'
+            with open(macos_hook_path, 'w', encoding='utf-8') as f:
+                f.write("""
+# -*- coding: utf-8 -*-
+# macOS용 PyInstaller 런타임 훅
+
+import os
+import sys
+import logging
+
+# 안전하게 Qt 백엔드 설정
+try:
+    if 'QT_QPA_PLATFORM' not in os.environ:
+        os.environ['QT_QPA_PLATFORM'] = 'cocoa'
+    
+    # Python 경로 설정
+    if getattr(sys, 'frozen', False):
+        # PyInstaller로 번들된 앱의 경우
+        app_path = os.path.dirname(sys.executable)
+        
+        # 필요한 경로 추가
+        if not sys.path or app_path not in sys.path:
+            sys.path.insert(0, app_path)
+            os.environ['PYTHONPATH'] = app_path + os.pathsep + os.environ.get('PYTHONPATH', '')
+        
+        # 로깅 활성화
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            filename=os.path.expanduser('~/Documents/batch_subs_runtime.log'),
+            filemode='w'
+        )
+        logging.info(f"macOS 런타임 훅 실행 중: {app_path}")
+        logging.info(f"Python 경로: {sys.path}")
+        logging.info(f"환경 변수: {[(k,v) for k,v in os.environ.items() if k.startswith(('QT_', 'PYTHON', 'PATH', 'DYLD_'))]}")
+except Exception as e:
+    # 표준 오류로도 출력
+    print(f"런타임 훅 오류: {e}", file=sys.stderr)
+    
+    # 가능하면 파일에도 로깅
+    try:
+        with open(os.path.expanduser('~/Documents/batch_subs_hook_error.log'), 'w') as f:
+            f.write(f"macOS 런타임 훅 오류: {e}")
+    except:
+        pass
+""")
+            logger.info(f"Created macOS runtime hook: {macos_hook_path}")
+            return str(macos_hook_path)
+        
+        # Windows용 런타임 훅
+        elif platform.system() == 'Windows':
+            windows_hook_path = hooks_dir / 'windows_runtime_hook.py'
+            with open(windows_hook_path, 'w', encoding='utf-8') as f:
+                f.write("""
+# -*- coding: utf-8 -*-
+# Windows용 PyInstaller 런타임 훅
+
+import os
+import sys
+import logging
+import ctypes
+
+# UTF-8 코드 페이지 설정
+try:
+    # Windows에서 UTF-8 콘솔 출력 지원
+    ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    
+    # 로깅 설정
+    if getattr(sys, 'frozen', False):
+        # 사용자 Documents 폴더 경로 가져오기
+        docs_path = os.path.join(os.path.expanduser('~'), 'Documents')
+        if not os.path.exists(docs_path):
+            docs_path = os.path.dirname(sys.executable)
+            
+        log_file = os.path.join(docs_path, 'batch_subs_runtime.log')
+        
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            filename=log_file,
+            filemode='w',
+            encoding='utf-8'
+        )
+        
+        logging.info("Windows 런타임 훅 실행 중")
+        logging.info(f"실행 경로: {sys.executable}")
+        logging.info(f"작업 디렉토리: {os.getcwd()}")
+        logging.info(f"sys.path: {sys.path}")
+except Exception as e:
+    # 오류 파일에 로깅
+    try:
+        with open(os.path.join(os.path.expanduser('~'), 'Documents', 'batch_subs_hook_error.log'), 'w', encoding='utf-8') as f:
+            f.write(f"Windows 런타임 훅 오류: {e}")
+    except:
+        pass
+""")
+            logger.info(f"Created Windows runtime hook: {windows_hook_path}")
+            return str(windows_hook_path)
+    
+    except Exception as e:
+        logger.error(f"Failed to create runtime hooks: {e}")
+        return None
+
 def build_application():
     """Build the application using PyInstaller"""
     logger.info("Starting build...")
@@ -151,6 +262,9 @@ def build_application():
     ffmpeg_success, ffmpeg_message = prepare_ffmpeg()
     logger.info(ffmpeg_message)
     
+    # 런타임 훅 생성
+    runtime_hook = create_runtime_hooks()
+    
     # 아이콘 경로 찾기
     icon_path = get_icon_path()
     
@@ -163,6 +277,17 @@ def build_application():
         '--name', 'batch_subs_gemini',
         '--add-data', f'icons{os.pathsep}icons',
     ]
+    
+    # 플랫폼별 특수 옵션
+    if platform.system() == 'Darwin':
+        cmd.extend([
+            '--codesign-identity=',  # 무서명
+            '--osx-bundle-identifier=com.user.batchsubsgemini'
+        ])
+    
+    # 런타임 훅 추가
+    if runtime_hook:
+        cmd.extend(['--runtime-hook', runtime_hook])
     
     # bin 디렉토리가 있으면 추가
     bin_dir = Path('bin')
@@ -191,6 +316,14 @@ def build_application():
         'threading',  # 필요한 기본 모듈
     ]
     
+    # macOS에서 특별히 필요한 모듈 추가
+    if platform.system() == 'Darwin':
+        hidden_imports.extend([
+            'PyQt6.QtDBus',
+            'PyQt6.QtWidgets.QMacCocoaViewContainer',
+            'pkg_resources.py2_warn'
+        ])
+    
     for hidden_import in hidden_imports:
         cmd.extend(['--hidden-import', hidden_import])
     
@@ -201,6 +334,13 @@ def build_application():
         cmd.extend(['--paths', site_packages])
     except Exception as e:
         logger.warning(f"Failed to get site-packages path: {e}")
+        # 대안적으로 사이트 패키지 경로 추가
+        try:
+            import google
+            google_path = os.path.dirname(os.path.dirname(google.__file__))
+            cmd.extend(['--paths', google_path])
+        except Exception as e2:
+            logger.warning(f"Failed to get Google package path: {e2}")
     
     # 패키지 수집
     packages_to_collect = [
@@ -212,6 +352,10 @@ def build_application():
     
     for package in packages_to_collect:
         cmd.extend(['--collect-all', package])
+    
+    # macOS에서 바이너리 수집
+    if platform.system() == 'Darwin':
+        cmd.extend(['--collect-binaries', 'PyQt6'])
     
     # 최적화 옵션
     cmd.extend(['--noupx'])  # UPX 압축 비활성화 (더 빠른 빌드)
