@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QProgressBar, QTextEdit, QGroupBox, QTabWidget, QMessageBox,
     QCheckBox, QSpinBox, QStatusBar
 )
-from PyQt6.QtCore import QThread, pyqtSignal, Qt, QSize, QMetaObject, Q_ARG
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QSize, QMetaObject, Q_ARG, QObject
 from PyQt6.QtGui import QIcon, QFont, QTextCursor
 import gemini_srt_translator as gst
 import platform
@@ -484,38 +484,73 @@ class MainWindow(QMainWindow):
 
     def change_language(self, index):
         try:
-            self.current_language = 'en' if index == 0 else 'ko'
-            self.update_texts()
+            logger.info(f"언어 변경 중: 인덱스 {index}")
+            
+            # 언어 설정 변경
+            if index == 0:
+                self.current_language = 'en'
+            else:
+                self.current_language = 'ko'
+                
+            # UI 텍스트 업데이트 전 잠금 설정
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            QApplication.processEvents()  # UI 업데이트 처리
+            
+            try:
+                # UI 텍스트 업데이트
+                self.update_texts()
+                logger.info(f"언어 변경 완료: {self.current_language}")
+            except Exception as e:
+                logger.error(f"언어 변경 중 오류: {str(e)}")
+                QMessageBox.warning(self, 
+                    "오류" if self.current_language == 'ko' else "Error", 
+                    f"언어 변경 중 오류 발생: {str(e)}" if self.current_language == 'ko' else f"Error changing language: {str(e)}"
+                )
+            finally:
+                # 언어 변경 후 잠금 해제
+                QApplication.restoreOverrideCursor()
         except Exception as e:
-            logger.error(f"언어 변경 중 오류: {str(e)}")
-            QMessageBox.critical(self, "오류", f"언어 변경 중 오류 발생: {str(e)}")
-            # 언어 설정을 기본값으로 복원
-            self.current_language = 'ko'
-            if hasattr(self, 'lang_combo'):
-                self.lang_combo.setCurrentIndex(1)  # 한국어 선택
+            logger.error(f"언어 변경 처리 중 예외: {str(e)}")
+            try:
+                QApplication.restoreOverrideCursor()  # 예외 발생시에도 커서 복원
+            except:
+                pass
 
     def update_texts(self):
         try:
-            # 안전하게 번역 텍스트 가져오기
-            def safe_get_text(key, default=""):
+            logger.info(f"UI 텍스트 업데이트 중 (언어: {self.current_language})")
+            
+            # 사전에 없는 키에 대한 안전한 접근을 위한 helper 함수
+            def safe_get_text(key, default=None):
                 try:
-                    return self.get_translation(key)
-                except Exception:
-                    return default
+                    result = TRANSLATIONS.get(self.current_language, {}).get(key)
+                    if result is None and default is not None:
+                        return default
+                    return result or key
+                except:
+                    return default or key
             
             # 윈도우 타이틀 업데이트
-            self.setWindowTitle(safe_get_text('title', 'SRT 번역기'))
+            self.setWindowTitle(safe_get_text('title', 'Gemini SRT Translator'))
             
-            # 각 UI 요소 업데이트 - 요소가 존재하는지 확인 후 진행
+            # 각 UI 컴포넌트 텍스트 업데이트 (각 속성이 있는지 확인 후 업데이트)
+            # 라벨 업데이트
+            if hasattr(self, 'lang_label'):
+                self.lang_label.setText(safe_get_text('language', '언어'))
+                
             if hasattr(self, 'api_label'):
-                self.api_label.setText(safe_get_text('api_key', 'API 키:'))
-            
-            if hasattr(self, 'srt_label'):
-                self.srt_label.setText(safe_get_text('srt_file', 'SRT 파일:'))
-            
+                self.api_label.setText(safe_get_text('api_key', 'API 키'))
+                
+            if hasattr(self, 'folder_label'):
+                self.folder_label.setText(safe_get_text('input_folder', '입력 폴더'))
+                
             if hasattr(self, 'model_label'):
-                self.model_label.setText(safe_get_text('model', '번역 모델:'))
-            
+                self.model_label.setText(safe_get_text('model', '모델'))
+                
+            if hasattr(self, 'progress_label'):
+                self.progress_label.setText(safe_get_text('progress', '진행'))
+                
+            # 버튼 업데이트
             if hasattr(self, 'browse_btn'):
                 self.browse_btn.setText(safe_get_text('browse', '찾아보기'))
             
@@ -535,10 +570,12 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'status_label'):
                 self.status_label.setText(safe_get_text('status_ready', '준비됨'))
             
+            logger.info("UI 텍스트 업데이트 완료")
         except Exception as e:
             logger.error(f"텍스트 업데이트 중 오류: {str(e)}")
             # 기본 언어로 복원
             self.current_language = 'ko'
+            raise  # 상위 함수가 처리할 수 있도록 예외 전파
 
     # 번역 텍스트를 안전하게 가져오는 헬퍼 메서드 추가
     def get_translation(self, key, default=None):
@@ -623,70 +660,194 @@ class MainWindow(QMainWindow):
         
         return log_layout
 
+    def setup_model_selection(self):
+        """모델 선택 UI 구성"""
+        try:
+            # 모델 선택 레이아웃
+            model_layout = QHBoxLayout()
+            model_label = QLabel(TRANSLATIONS[self.current_language]['model'])
+            self.model_combo = QComboBox()
+            self.get_models_btn = QPushButton(TRANSLATIONS[self.current_language]['get_models'])
+            self.get_models_btn.clicked.connect(self.fetch_models)
+            model_layout.addWidget(model_label)
+            model_layout.addWidget(self.model_combo)
+            model_layout.addWidget(self.get_models_btn)
+            
+            # 메인 UI에 추가 (tab1_layout이 있으면 거기에 추가)
+            if hasattr(self, 'tab1_layout') and self.tab1_layout:
+                self.tab1_layout.addLayout(model_layout)
+            else:
+                # 중앙 위젯의 레이아웃에 직접 추가
+                central_widget = self.centralWidget()
+                if central_widget and central_widget.layout():
+                    central_widget.layout().addLayout(model_layout)
+                else:
+                    logger.error("중앙 위젯 또는 레이아웃이 없습니다")
+            
+            logger.info("모델 선택 UI 설정 완료")
+        except Exception as e:
+            logger.error(f"모델 선택 UI 설정 중 오류: {str(e)}")
+
     def fetch_models(self):
         try:
+            if not hasattr(self, 'model_combo') or self.model_combo is None:
+                logger.error("model_combo가 초기화되지 않았습니다.")
+                self.setup_model_selection()  # 모델 선택 UI 재설정 시도
+                if not hasattr(self, 'model_combo') or self.model_combo is None:
+                    QMessageBox.critical(self, "오류", "모델 선택 컴포넌트를 초기화할 수 없습니다.")
+                    return
+
+            # API 키 가져오기
             api_key = self.api_input.text()
             if not api_key:
-                QMessageBox.warning(
-                    self, 
-                    "Error", 
-                    self.get_translation('error_no_api_key', '먼저 API 키를 입력해주세요')
-                )
+                if hasattr(self, 'status_label') and self.status_label:
+                    self.status_label.setText(self.get_translation('error_api_key', 'API 키가 필요합니다'))
+                if hasattr(self, 'log_text') and self.log_text:
+                    self.log_text.append(self.get_translation('error_api_key', 'API 키가 필요합니다'))
+                QMessageBox.warning(self, self.get_translation('error', '오류'), 
+                                   self.get_translation('error_api_key', 'API 키가 필요합니다'))
                 return
-            
-            self.status_label.setText(self.get_translation('loading_models', '모델 목록 로딩 중...'))
+
+            # 모델 목록 가져오기 시작
             self.get_models_btn.setEnabled(False)
-            
-            # 모델 로드 스레드 시작
-            self.model_loader = ModelLoaderWorker(api_key)
-            self.model_loader.models_loaded.connect(self.on_models_loaded)
-            self.model_loader.error.connect(self.on_model_load_error)
-            self.model_loader.start()
+            if hasattr(self, 'status_label') and self.status_label:
+                self.status_label.setText(self.get_translation('loading_models', '모델 목록 불러오는 중...'))
+            if hasattr(self, 'log_text') and self.log_text:
+                self.log_text.append(self.get_translation('loading_models', '모델 목록 불러오는 중...'))
+
+            # 워커 스레드 시작
+            worker = ModelLoaderWorker(api_key)
+            worker.models_loaded.connect(self.on_models_loaded)
+            worker.error.connect(self.on_model_load_error)
+            self.worker_thread = QThread()
+            worker.moveToThread(self.worker_thread)
+            self.worker_thread.started.connect(worker.load_models)
+            self.worker_thread.start()
         except Exception as e:
             logger.error(f"모델 목록 조회 중 오류: {str(e)}")
-            if hasattr(self, 'get_models_btn'):
+            if hasattr(self, 'get_models_btn') and self.get_models_btn:
                 self.get_models_btn.setEnabled(True)
-            if hasattr(self, 'log_output'):
-                self.log_output.append(f"오류: {str(e)}")
+            if hasattr(self, 'status_label') and self.status_label:
+                self.status_label.setText(f"오류: {str(e)}")
+            if hasattr(self, 'log_text') and self.log_text:
+                self.log_text.append(f"오류: {str(e)}")
             QMessageBox.critical(self, "오류", f"모델 목록 조회 중 오류 발생: {str(e)}")
-    
+
     def on_models_loaded(self, models):
         try:
-            if not hasattr(self, 'model_combo') or not self.model_combo:
+            if not hasattr(self, 'model_combo') or self.model_combo is None:
                 logger.error("model_combo가 초기화되지 않았습니다")
+                # 모델 선택 UI 다시 생성 시도
+                self.setup_model_selection()
+                if not hasattr(self, 'model_combo') or self.model_combo is None:
+                    QMessageBox.critical(self, "오류", "모델 선택 컴포넌트를 초기화할 수 없습니다")
+                    return
+                
+            # 모델 목록이 비어있는 경우 처리
+            if not models:
+                logger.warning("가져온 모델 목록이 비어있습니다")
+                if hasattr(self, 'status_label') and self.status_label:
+                    self.status_label.setText(self.get_translation('no_models', '가져온 모델이 없습니다'))
+                if hasattr(self, 'log_text') and self.log_text:
+                    self.log_text.append(self.get_translation('no_models', '가져온 모델이 없습니다'))
+                if hasattr(self, 'get_models_btn') and self.get_models_btn:
+                    self.get_models_btn.setEnabled(True)
                 return
                 
+            # 모델 목록 업데이트
             self.model_combo.clear()
             self.model_combo.addItems(models)
             
+            # 상태 업데이트
             if hasattr(self, 'status_label') and self.status_label:
                 self.status_label.setText(self.get_translation('models_loaded', '모델 목록 로드 완료'))
             
-            if hasattr(self, 'get_models_btn'):
+            # 버튼 다시 활성화
+            if hasattr(self, 'get_models_btn') and self.get_models_btn:
                 self.get_models_btn.setEnabled(True)
             
-            if hasattr(self, 'log_text'):
+            # 로그에 기록
+            if hasattr(self, 'log_text') and self.log_text:
                 self.log_text.append(self.get_translation('models_loaded', '모델 목록 로드 완료'))
+                
+            logger.info(f"모델 {len(models)}개 로드 완료")
+            
+            # 스레드 정리
+            if hasattr(self, 'worker_thread') and self.worker_thread and self.worker_thread.isRunning():
+                self.worker_thread.quit()
+                self.worker_thread.wait()
+                
         except Exception as e:
             logger.error(f"모델 목록 처리 중 오류: {str(e)}")
-            if hasattr(self, 'get_models_btn'):
+            if hasattr(self, 'get_models_btn') and self.get_models_btn:
                 self.get_models_btn.setEnabled(True)
+            if hasattr(self, 'log_text') and self.log_text:
+                self.log_text.append(f"오류: {str(e)}")
+            QMessageBox.critical(self, "오류", f"모델 목록 처리 중 오류 발생: {str(e)}")
     
     def on_model_load_error(self, error_msg):
         try:
-            if hasattr(self, 'status_label'):
-                self.status_label.setText(self.get_translation('status_error', '오류 발생'))
+            logger.error(f"모델 로드 오류: {error_msg}")
             
-            if hasattr(self, 'get_models_btn'):
+            # 상태 업데이트
+            if hasattr(self, 'status_label') and self.status_label:
+                self.status_label.setText(f"{self.get_translation('error', '오류')}: {error_msg}")
+            
+            # 로그에 기록
+            if hasattr(self, 'log_text') and self.log_text:
+                self.log_text.append(f"{self.get_translation('error', '오류')}: {error_msg}")
+            
+            # 버튼 다시 활성화
+            if hasattr(self, 'get_models_btn') and self.get_models_btn:
                 self.get_models_btn.setEnabled(True)
+                
+            # 오류 표시
+            QMessageBox.critical(self, 
+                self.get_translation('error', '오류'), 
+                f"{self.get_translation('error_loading_models', '모델 목록 로드 중 오류 발생')}: {error_msg}"
+            )
             
-            if hasattr(self, 'log_output'):
-                self.log_output.append(f"Error: {error_msg}")
-            
-            QMessageBox.warning(self, "Error", error_msg)
+            # 스레드 정리
+            if hasattr(self, 'worker_thread') and self.worker_thread and self.worker_thread.isRunning():
+                self.worker_thread.quit()
+                self.worker_thread.wait()
+                
         except Exception as e:
             logger.error(f"모델 로드 오류 처리 중 예외 발생: {str(e)}")
-            QMessageBox.critical(self, "오류", f"예기치 않은 오류가 발생했습니다: {str(e)}")
+            # 기본 오류 메시지라도 보여주기
+            QMessageBox.critical(self, "오류", f"모델 로드 실패: {error_msg}")
+
+class ModelLoaderWorker(QObject):
+    models_loaded = pyqtSignal(list)
+    error = pyqtSignal(str)
+    
+    def __init__(self, api_key):
+        super().__init__()
+        self.api_key = api_key
+        
+    def load_models(self):
+        try:
+            models = []
+            # 모델 목록 획득 
+            if self.api_key:
+                from google.generativeai import configure, list_models
+                configure(api_key=self.api_key)
+                available_models = list_models()
+                
+                # 이름 추출
+                for model in available_models:
+                    if hasattr(model, 'name'):
+                        name = model.name
+                        # 마지막 슬래시 이후 부분만 사용
+                        if '/' in name:
+                            name = name.split('/')[-1]
+                        models.append(name)
+            
+            # 결과 반환
+            self.models_loaded.emit(models)
+        except Exception as e:
+            logger.error(f"모델 목록 가져오기 오류: {str(e)}")
+            self.error.emit(str(e))
 
 def main():
     """애플리케이션 메인 함수"""
