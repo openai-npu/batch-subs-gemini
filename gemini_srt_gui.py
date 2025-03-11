@@ -314,6 +314,9 @@ class MainWindow(QMainWindow):
             print("MainWindow 초기화 시작...")
             super().__init__()
             
+            # 중요 UI 컴포넌트 초기화
+            self.model_combo = None  # 모델 콤보박스 명시적 초기화
+            
             # 기본 UI 구성요소 설정
             print("UI 구성 설정 중...")
             self.setWindowTitle("Gemini-SRT 번역기")
@@ -421,7 +424,16 @@ class MainWindow(QMainWindow):
         # 모델 선택
         model_layout = QHBoxLayout()
         model_label = QLabel(TRANSLATIONS[self.current_language]['model'])
-        self.model_combo = QComboBox()
+        
+        # 모델 콤보 초기화 여부 확인 및 로깅
+        print(f"init_ui에서 model_combo 초기화 전 상태: {self.model_combo}")
+        logger.debug(f"init_ui에서 model_combo 초기화 전 상태: {self.model_combo}")
+        
+        # 이미 초기화되어 있으면 재사용, 아니면 새로 생성
+        if self.model_combo is None:
+            self.model_combo = QComboBox()
+            logger.debug("init_ui에서 model_combo 새로 생성됨")
+        
         model_layout.addWidget(model_label)
         model_layout.addWidget(self.model_combo)
         layout.addLayout(model_layout)
@@ -460,11 +472,22 @@ class MainWindow(QMainWindow):
             self.folder_input.setText(folder)
 
     def start_translation(self):
+        # 디버깅 로그 추가
+        logger.debug(f"start_translation 시작. model_combo 상태: {self.model_combo}")
+        print(f"start_translation 시작. model_combo 상태: {self.model_combo}")
+        
         api_key = self.api_input.text()
         input_folder = self.folder_input.text()
-        model = self.model_combo.currentText()
+        
+        # model_combo가 초기화되지 않았거나 없는 경우 체크
+        if not hasattr(self, 'model_combo') or self.model_combo is None:
+            logger.error("model_combo가 초기화되지 않았습니다")
+            QMessageBox.critical(self, "오류", "모델 선택 컴포넌트를 초기화할 수 없습니다. 앱을 재시작하세요.")
+            return
+            
+        model = self.model_combo.currentText() if self.model_combo.count() > 0 else ""
 
-        if not api_key or not input_folder:
+        if not api_key or not input_folder or not model:
             QMessageBox.warning(self, "Error", 
                               TRANSLATIONS[self.current_language]['error_missing_fields'])
             return
@@ -663,10 +686,20 @@ class MainWindow(QMainWindow):
     def setup_model_selection(self):
         """모델 선택 UI 구성"""
         try:
+            logger.debug(f"setup_model_selection 시작. 현재 model_combo 상태: {self.model_combo}")
+            print(f"setup_model_selection 시작. 현재 model_combo 상태: {self.model_combo}")
+            
             # 모델 선택 레이아웃
             model_layout = QHBoxLayout()
             model_label = QLabel(TRANSLATIONS[self.current_language]['model'])
-            self.model_combo = QComboBox()
+            
+            # 이미 초기화되어 있는지 확인
+            if self.model_combo is None:
+                logger.debug("setup_model_selection에서 model_combo 초기화")
+                self.model_combo = QComboBox()
+            else:
+                logger.debug("setup_model_selection에서 기존 model_combo 재사용")
+            
             self.get_models_btn = QPushButton(TRANSLATIONS[self.current_language]['get_models'])
             self.get_models_btn.clicked.connect(self.fetch_models)
             model_layout.addWidget(model_label)
@@ -690,9 +723,16 @@ class MainWindow(QMainWindow):
 
     def fetch_models(self):
         try:
+            logger.debug(f"fetch_models 시작. model_combo 상태: {self.model_combo}")
+            print(f"fetch_models 시작. model_combo 상태: {self.model_combo}")
+            
             if not hasattr(self, 'model_combo') or self.model_combo is None:
                 logger.error("model_combo가 초기화되지 않았습니다.")
-                self.setup_model_selection()  # 모델 선택 UI 재설정 시도
+                # 모델 선택 UI 재설정 시도
+                logger.debug("setup_model_selection 호출 시도")
+                self.setup_model_selection()
+                logger.debug(f"setup_model_selection 호출 후 model_combo 상태: {self.model_combo}")
+                
                 if not hasattr(self, 'model_combo') or self.model_combo is None:
                     QMessageBox.critical(self, "오류", "모델 선택 컴포넌트를 초기화할 수 없습니다.")
                     return
@@ -735,10 +775,16 @@ class MainWindow(QMainWindow):
 
     def on_models_loaded(self, models):
         try:
+            logger.debug(f"on_models_loaded 시작. model_combo 상태: {self.model_combo}")
+            print(f"on_models_loaded 시작. model_combo 상태: {self.model_combo}")
+            
             if not hasattr(self, 'model_combo') or self.model_combo is None:
                 logger.error("model_combo가 초기화되지 않았습니다")
                 # 모델 선택 UI 다시 생성 시도
+                logger.debug("setup_model_selection 호출 시도")
                 self.setup_model_selection()
+                logger.debug(f"setup_model_selection 호출 후 model_combo 상태: {self.model_combo}")
+                
                 if not hasattr(self, 'model_combo') or self.model_combo is None:
                     QMessageBox.critical(self, "오류", "모델 선택 컴포넌트를 초기화할 수 없습니다")
                     return

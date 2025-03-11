@@ -372,6 +372,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.current_language = 'ko'  # 기본 언어를 한국어로 설정
         self.is_folder_mode = True  # 기본으로 폴더 모드 선택
+        
+        # 중요 UI 컴포넌트 미리 초기화
+        self.model_combo = None  # 모델 콤보박스 명시적 초기화
+        
         self.init_ui()
         self.setup_logging()
         # 시작 시 모델 로드하지 않음
@@ -449,7 +453,16 @@ class MainWindow(QMainWindow):
         # 모델 선택
         model_layout = QHBoxLayout()
         self.model_label = QLabel(TRANSLATIONS[self.current_language]['model'])
-        self.model_combo = QComboBox()
+        
+        # 모델 콤보 초기화 여부 확인 및 로깅
+        print(f"init_ui에서 model_combo 초기화 전 상태: {self.model_combo}")
+        logger.debug(f"init_ui에서 model_combo 초기화 전 상태: {self.model_combo}")
+        
+        # 이미 초기화되어 있으면 재사용, 아니면 새로 생성
+        if self.model_combo is None:
+            self.model_combo = QComboBox()
+            logger.debug("init_ui에서 model_combo 새로 생성됨")
+        
         self.get_models_btn = QPushButton(TRANSLATIONS[self.current_language]['get_models'])
         self.get_models_btn.clicked.connect(self.fetch_models)
         model_layout.addWidget(self.model_label)
@@ -503,6 +516,10 @@ class MainWindow(QMainWindow):
 
     def fetch_models(self):
         try:
+            # 디버깅 로그 추가
+            logger.debug(f"fetch_models 시작. model_combo 상태: {self.model_combo}")
+            print(f"fetch_models 시작. model_combo 상태: {self.model_combo}")
+            
             api_key = self.api_input.text()
             if not api_key:
                 QMessageBox.warning(
@@ -529,9 +546,33 @@ class MainWindow(QMainWindow):
     
     def on_models_loaded(self, models):
         try:
+            # 디버깅 로그 추가
+            logger.debug(f"on_models_loaded 시작. model_combo 상태: {self.model_combo}")
+            print(f"on_models_loaded 시작. model_combo 상태: {self.model_combo}")
+            
             if not hasattr(self, 'model_combo') or not self.model_combo:
                 logger.error("model_combo가 초기화되지 않았습니다")
-                return
+                # model_combo가 없으면 재생성 시도
+                self.model_combo = QComboBox()
+                logger.debug("on_models_loaded에서 model_combo 재생성됨")
+                print("on_models_loaded에서 model_combo 재생성됨")
+                
+                # 재생성된 콤보박스를 레이아웃에 추가 (기존 레이아웃이 있는 경우)
+                try:
+                    for i in range(self.tab1_layout.count()):
+                        item = self.tab1_layout.itemAt(i)
+                        if isinstance(item, QHBoxLayout):
+                            for j in range(item.count()):
+                                widget = item.itemAt(j).widget()
+                                if isinstance(widget, QLabel) and widget.text() == TRANSLATIONS[self.current_language]['model']:
+                                    # 모델 레이블이 있는 레이아웃을 찾았으므로 여기에 추가
+                                    item.insertWidget(j+1, self.model_combo)
+                                    logger.debug("레이아웃에 model_combo 다시 추가됨")
+                                    print("레이아웃에 model_combo 다시 추가됨")
+                                    break
+                except Exception as layout_err:
+                    logger.error(f"레이아웃에 model_combo 추가 실패: {str(layout_err)}")
+                    print(f"레이아웃에 model_combo 추가 실패: {str(layout_err)}")
                 
             self.model_combo.clear()
             self.model_combo.addItems(models)
@@ -570,9 +611,20 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "오류", f"예기치 않은 오류가 발생했습니다: {str(e)}")
 
     def start_translation(self):
+        # 디버깅 로그 추가
+        logger.debug(f"start_translation 시작. model_combo 상태: {self.model_combo}")
+        print(f"start_translation 시작. model_combo 상태: {self.model_combo}")
+        
         api_key = self.api_input.text()
         api_key2 = self.api2_input.text()
         input_path = self.folder_input.text()
+        
+        # model_combo가 초기화되지 않았거나 없는 경우 체크
+        if not hasattr(self, 'model_combo') or self.model_combo is None:
+            logger.error("model_combo가 초기화되지 않았습니다")
+            QMessageBox.critical(self, "오류", "모델 선택 컴포넌트를 초기화할 수 없습니다. 앱을 재시작하세요.")
+            return
+            
         model = self.model_combo.currentText() if self.model_combo.count() > 0 else ""
 
         if not api_key or not input_path or not model:
