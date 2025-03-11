@@ -16,9 +16,9 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QLabel, QLineEdit, QComboBox, QFileDialog, 
     QProgressBar, QTextEdit, QGroupBox, QTabWidget, QMessageBox,
-    QCheckBox, QSpinBox, QRadioButton, QButtonGroup
+    QCheckBox, QSpinBox, QRadioButton, QButtonGroup, QDialog
 )
-from PyQt6.QtCore import QThread, pyqtSignal, Qt, QSize, QMetaObject, Q_ARG
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QSize, QMetaObject, Q_ARG, QEventLoop, pyqtSlot
 from PyQt6.QtGui import QIcon, QFont, QTextCursor
 import gemini_srt_translator as gst
 import platform
@@ -107,44 +107,104 @@ TRANSLATIONS = {
     }
 }
 
-def extract_subtitle(mkv_file, output_srt, preferred_languages=None):
+def extract_subtitle(video_file, output_srt, track_index=None, preferred_languages=None):
     """
-    MKV 파일에서 자막을 추출합니다.
+    비디오 파일에서 자막을 추출하고 SRT 파일로 저장합니다.
     
     Args:
-        mkv_file (str): MKV 파일 경로
+        video_file (str): 자막을 추출할 비디오 파일 경로
         output_srt (str): 출력 SRT 파일 경로
-        preferred_languages (list, optional): 선호하는 언어 코드 리스트. 기본값: ['eng', 'en']
+        track_index (int, optional): 추출할 자막 트랙 인덱스. None인 경우 자동 선택
+        preferred_languages (list, optional): 선호하는 언어 코드 목록 (예: ['en', 'ko'])
     
     Returns:
         bool: 성공 여부
     """
-    if HAVE_UTILS:
-        # 새 유틸리티 사용
-        return subtitle_utils.extract_subtitle(
-            mkv_file, 
-            output_srt, 
-            track_index=None, 
-            preferred_languages=preferred_languages
-        )
-    else:
-        # 기존 방식 (fallback)
-        cmd = [
-            "ffmpeg", "-y", "-i", mkv_file,
-            "-map", "0:s:0",  # 첫 번째 자막 트랙 선택
-            "-c:s", "srt", output_srt
-        ]
+    import os
+    import logging
+    
+    # 기본 선호 언어 설정
+    if preferred_languages is None:
+        preferred_languages = ['en', 'ko', 'und']
+    
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # subtitle_utils 모듈을 사용할 수 있는 경우
         try:
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            logging.info(f"[자막 추출 성공] {os.path.basename(mkv_file)} -> {os.path.basename(output_srt)}")
+            import subtitle_utils
+            
+            logger.info(f"subtitle_utils 모듈로 자막 추출 시도: {os.path.basename(video_file)}")
+            # 트랙 인덱스가 주어진 경우 해당 트랙만 추출 시도
+            if track_index is not None:
+                success = subtitle_utils.extract_subtitle_auto(video_file, output_srt, 
+                                                             track_index=track_index)
+                if success:
+                    logger.info(f"지정된 트랙 {track_index}에서 자막 추출 성공")
+                    return True
+                logger.warning(f"지정된 트랙 {track_index}에서 자막 추출 실패, 다른 방법 시도 중...")
+            
+            # 1. 자동 선택 방식으로 추출 시도
+            success = subtitle_utils.extract_subtitle_auto(video_file, output_srt, 
+                                                         preferred_languages=preferred_languages)
+            if success:
+                return True
+                
+            # 2. 단순 방식으로 추출 시도
+            logger.info("자동 선택 방식 실패, 단순 방식 시도 중...")
+            success = subtitle_utils.extract_subtitle_simple(video_file, output_srt)
+            if success:
+                return True
+                
+            # 3. 강제 추출 방식 시도
+            logger.info("모든 일반 방식 실패, 강제 추출 시도 중...")
+            success = subtitle_utils.extract_subtitle_force(video_file, output_srt)
+            if success:
+                return True
+                
+            logger.error(f"모든 자막 추출 방법이 실패했습니다: {os.path.basename(video_file)}")
+            return False
+            
+        except ImportError:
+            logger.warning("subtitle_utils 모듈을 찾을 수 없어 기본 추출 방식 사용")
+    
+        # subtitle_utils를 사용할 수 없는 경우 기본 방식으로 시도
+        import ffmpeg_utils
+        
+        # ffmpeg 무결성 검사
+        if not ffmpeg_utils.check_ffmpeg_integrity():
+            logger.error("ffmpeg 무결성 검사에 실패했습니다.")
+            return False
+        
+        # 기본 방식으로 자막 추출 시도
+        cmd = [
+            "ffmpeg", 
+            "-y",
+            "-i", video_file,
+            "-map", "0:s:0" if track_index is None else f"0:s:{track_index}",
+            "-c:s", "srt",
+            output_srt
+        ]
+        
+        logger.info(f"기본 ffmpeg로 자막 추출 시도: {os.path.basename(video_file)}")
+        logger.debug(f"추출 명령어: {' '.join(cmd)}")
+        
+        # 새로운 ffmpeg_utils 함수 사용
+        success, output = ffmpeg_utils.run_ffmpeg_command(cmd, timeout=120)
+        
+        # 출력 파일 확인
+        if success and os.path.exists(output_srt) and os.path.getsize(output_srt) > 0:
+            logger.info(f"기본 방식으로 자막 추출 성공: {os.path.basename(output_srt)}")
             return True
-        except subprocess.CalledProcessError as e:
-            err_msg = e.stderr.decode('utf-8').strip()
-            logging.error(f"[자막 추출 실패] {os.path.basename(mkv_file)}: {err_msg}")
+        else:
+            logger.warning(f"자막 파일이 생성되지 않았거나 비어있습니다: {output_srt}")
+            if not success:
+                logger.warning(f"ffmpeg 오류: {output}")
             return False
-        except FileNotFoundError:
-            logging.error("ffmpeg를 찾을 수 없습니다. ffmpeg를 설치하거나 PATH에 추가해주세요.")
-            return False
+            
+    except Exception as e:
+        logger.error(f"자막 추출 중 오류 발생: {type(e).__name__} - {e}")
+        return False
 
 def translate_subtitle(srt_file):
     """
@@ -247,6 +307,9 @@ class TranslationWorker(QThread):
     finished = pyqtSignal()
     log = pyqtSignal(str)
     status = pyqtSignal(str)
+    request_track_selection = pyqtSignal(str, list)  # 파일명, 트랙목록
+    track_selection_done = pyqtSignal(int)  # 선택된 트랙 인덱스
+    track_selection_canceled = pyqtSignal()  # 선택 취소
 
     def __init__(self, api_key, api_key2, input_path, model, is_folder=True, current_language='ko'):
         super().__init__()
@@ -257,7 +320,7 @@ class TranslationWorker(QThread):
         self.is_folder = is_folder
         self.is_running = True
         self.current_language = current_language
-        self.preferred_languages = ['eng', 'en']  # 영어 자막 우선
+        self.preferred_languages = ['eng', 'en', 'und']  # 선호하는 자막 언어
         self.log_handler = None
 
     def run(self):
@@ -319,6 +382,7 @@ class TranslationWorker(QThread):
                 self.log.emit(f"파일 [{index}/{total_files}]: {os.path.basename(mkv_file)} 처리 시작")
 
                 # 자막 정보 표시 (가능한 경우)
+                tracks = []
                 if HAVE_UTILS:
                     tracks = subtitle_utils.list_subtitle_tracks(mkv_file)
                     if tracks:
@@ -331,8 +395,59 @@ class TranslationWorker(QThread):
                 base_name, _ = os.path.splitext(mkv_file)
                 srt_file = f"{base_name}_eng.srt"
 
+                # 자막 추출 시도
+                track_index = None
+                extract_result = extract_subtitle(mkv_file, srt_file, self.preferred_languages, track_index)
+                
+                # 자막 추출 실패 시 사용자에게 트랙 선택 요청
+                if not extract_result and tracks:
+                    self.log.emit("자동으로 적합한 자막 트랙을 찾지 못했습니다. 사용자 선택 요청...")
+                    
+                    # 메인 스레드로 트랙 선택 요청 신호 발생
+                    # QMetaObject를 사용하여 안전하게 신호 발생
+                    file_name = os.path.basename(mkv_file)
+                    QMetaObject.invokeMethod(self, "requestTrackSelection", 
+                                            Qt.ConnectionType.QueuedConnection,
+                                            Q_ARG(str, file_name), 
+                                            Q_ARG(list, tracks))
+                    
+                    # 트랙 선택을 기다리기 위한 이벤트 루프
+                    wait_loop = QEventLoop()
+                    self.track_selected = False
+                    self.selected_track_index = None
+                    
+                    # 시그널 연결을 위한 임시 함수
+                    def on_track_selected(track_idx):
+                        self.track_selected = True
+                        self.selected_track_index = track_idx
+                        wait_loop.quit()
+                    
+                    # 트랙 선택 취소를 위한 임시 함수
+                    def on_selection_canceled():
+                        self.track_selected = False
+                        wait_loop.quit()
+                    
+                    # 시그널 연결
+                    self.track_selection_done.connect(on_track_selected)
+                    self.track_selection_canceled.connect(on_selection_canceled)
+                    
+                    # 사용자 응답 대기
+                    wait_loop.exec()
+                    
+                    # 시그널 연결 해제
+                    self.track_selection_done.disconnect(on_track_selected)
+                    self.track_selection_canceled.disconnect(on_selection_canceled)
+                    
+                    # 사용자가 트랙을 선택한 경우
+                    if self.track_selected and self.selected_track_index is not None:
+                        track_index = self.selected_track_index
+                        self.log.emit(f"사용자가 트랙 #{track_index}를 선택했습니다. 자막 추출 재시도...")
+                        extract_result = extract_subtitle(mkv_file, srt_file, track_index)
+                    else:
+                        self.log.emit("사용자가 트랙 선택을 취소했습니다.")
+                
                 # 자막 추출에 성공하면 번역 진행, 실패 시 해당 파일 건너뜀
-                if extract_subtitle(mkv_file, srt_file, self.preferred_languages):
+                if extract_result:
                     if translate_subtitle(srt_file):
                         self.log.emit(f"파일 처리 완료: {os.path.basename(mkv_file)}")
                     else:
@@ -366,6 +481,19 @@ class TranslationWorker(QThread):
 
     def stop(self):
         self.is_running = False
+
+    # QMetaObject.invokeMethod에서 호출하는 슬롯
+    @pyqtSlot(str, list)
+    def requestTrackSelection(self, file_name, tracks):
+        """트랙 선택 요청을 GUI 쪽으로 전달합니다."""
+        try:
+            logger.debug(f"requestTrackSelection 호출됨. 파일: {file_name}, 트랙: {len(tracks)}개")
+            # request_track_selection 시그널 발생
+            self.request_track_selection.emit(file_name, tracks)
+        except Exception as e:
+            logger.error(f"트랙 선택 요청 중 오류: {str(e)}")
+            # 오류 발생 시 선택 취소로 처리
+            self.track_selection_canceled.emit()
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -642,8 +770,13 @@ class MainWindow(QMainWindow):
             self.is_folder_mode,
             self.current_language
         )
+        
+        # 자막 트랙 선택 관련 시그널 연결
+        self.worker.request_track_selection.connect(self.show_track_selection_dialog)
+        
         self.worker.progress.connect(self.progress_bar.setValue)
-        self.worker.log.connect(self.log_text.append)
+        if hasattr(self, 'log_text'):
+            self.worker.log.connect(self.log_text.append)
         self.worker.status.connect(self.status_label.setText)
         self.worker.finished.connect(self.translation_finished)
         self.worker.start()
@@ -772,6 +905,82 @@ class MainWindow(QMainWindow):
                 log_layout = QVBoxLayout(log_group)
                 log_layout.addWidget(self.log_text)
                 layout.addWidget(log_group)
+
+    def show_track_selection_dialog(self, file_name, tracks):
+        """자막 트랙 선택 대화상자를 표시합니다."""
+        try:
+            logger.debug(f"트랙 선택 대화상자 호출됨. 파일: {file_name}, 트랙: {len(tracks)}개")
+            
+            # 트랙이 없는 경우 처리
+            if not tracks:
+                QMessageBox.warning(self, "알림", f"'{file_name}'에서 자막 트랙을 찾을 수 없습니다.")
+                if hasattr(self, 'worker') and self.worker:
+                    self.worker.track_selection_canceled.emit()
+                return
+            
+            # 트랙 선택 대화상자
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"자막 트랙 선택 - {file_name}")
+            dialog.setMinimumWidth(500)
+            
+            layout = QVBoxLayout(dialog)
+            
+            # 설명 레이블
+            label = QLabel("자동으로 적합한 자막 트랙을 찾지 못했습니다. 사용할 자막 트랙을 선택해주세요:")
+            label.setWordWrap(True)
+            layout.addWidget(label)
+            
+            # 트랙 목록
+            track_combo = QComboBox()
+            for track in tracks:
+                lang = track.get('language', 'unknown')
+                title = track.get('title', '')
+                codec = track.get('codec', 'unknown')
+                
+                # 트랙 정보 포매팅
+                display_text = f"트랙 #{track['index']} - 언어: {lang}"
+                if title:
+                    display_text += f", 제목: {title}"
+                display_text += f", 코덱: {codec}"
+                
+                track_combo.addItem(display_text, track['index'])
+            
+            layout.addWidget(track_combo)
+            
+            # 버튼
+            button_layout = QHBoxLayout()
+            cancel_btn = QPushButton("취소")
+            ok_btn = QPushButton("선택")
+            ok_btn.setDefault(True)
+            
+            button_layout.addWidget(cancel_btn)
+            button_layout.addWidget(ok_btn)
+            layout.addLayout(button_layout)
+            
+            # 버튼 이벤트 연결
+            cancel_btn.clicked.connect(dialog.reject)
+            ok_btn.clicked.connect(dialog.accept)
+            
+            # 대화상자 실행
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                selected_index = track_combo.currentData()
+                logger.debug(f"사용자가 트랙 #{selected_index}를 선택했습니다.")
+                
+                # 워커 스레드에 선택된 트랙 전달
+                if hasattr(self, 'worker') and self.worker:
+                    self.worker.track_selection_done.emit(selected_index)
+            else:
+                logger.debug("사용자가 트랙 선택을 취소했습니다.")
+                # 워커 스레드에 선택 취소 알림
+                if hasattr(self, 'worker') and self.worker:
+                    self.worker.track_selection_canceled.emit()
+        
+        except Exception as e:
+            logger.error(f"트랙 선택 대화상자 오류: {str(e)}")
+            # 워커 스레드에 선택 취소 알림
+            if hasattr(self, 'worker') and self.worker:
+                self.worker.track_selection_canceled.emit()
+            QMessageBox.critical(self, "오류", f"트랙 선택 중 오류가 발생했습니다: {str(e)}")
 
 def log_debug_info():
     """앱 시작 시 디버그 정보를 로깅"""

@@ -92,44 +92,99 @@ TRANSLATIONS = {
     }
 }
 
-def extract_subtitle(mkv_file, output_srt, preferred_languages=None):
+def extract_subtitle(video_file, output_srt, track_index=None, preferred_languages=None):
     """
-    MKV 파일에서 자막을 추출합니다.
+    비디오 파일에서 자막을 추출하고 SRT 파일로 저장합니다.
     
     Args:
-        mkv_file (str): MKV 파일 경로
+        video_file (str): 자막을 추출할 비디오 파일 경로
         output_srt (str): 출력 SRT 파일 경로
-        preferred_languages (list, optional): 선호하는 언어 코드 리스트
+        track_index (int, optional): 추출할 자막 트랙 인덱스. None인 경우 자동 선택
+        preferred_languages (list, optional): 선호하는 언어 코드 목록 (예: ['en', 'ko'])
     
     Returns:
         bool: 성공 여부
     """
-    if HAVE_UTILS:
-        # 새 유틸리티 사용
-        return subtitle_utils.extract_subtitle(
-            mkv_file, 
-            output_srt, 
-            track_index=None, 
-            preferred_languages=preferred_languages
-        )
-    else:
-        # 기존 방식 (fallback)
-        cmd = [
-            "ffmpeg", "-y", "-i", mkv_file,
-            "-map", "0:s:0",  # 첫 번째 자막 트랙 선택
-            "-c:s", "srt", output_srt
-        ]
+    # 기본 선호 언어 설정
+    if preferred_languages is None:
+        preferred_languages = ['en', 'ko', 'und']
+    
+    try:
+        # subtitle_utils 모듈을 사용할 수 있는 경우
         try:
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            logging.info(f"[자막 추출 성공] {os.path.basename(mkv_file)} -> {os.path.basename(output_srt)}")
+            import subtitle_utils
+            
+            logger.info(f"subtitle_utils 모듈로 자막 추출 시도: {os.path.basename(video_file)}")
+            # 트랙 인덱스가 주어진 경우 해당 트랙만 추출 시도
+            if track_index is not None:
+                success = subtitle_utils.extract_subtitle_auto(video_file, output_srt, 
+                                                             track_index=track_index)
+                if success:
+                    logger.info(f"지정된 트랙 {track_index}에서 자막 추출 성공")
+                    return True
+                logger.warning(f"지정된 트랙 {track_index}에서 자막 추출 실패, 다른 방법 시도 중...")
+            
+            # 1. 자동 선택 방식으로 추출 시도
+            success = subtitle_utils.extract_subtitle_auto(video_file, output_srt, 
+                                                         preferred_languages=preferred_languages)
+            if success:
+                return True
+                
+            # 2. 단순 방식으로 추출 시도
+            logger.info("자동 선택 방식 실패, 단순 방식 시도 중...")
+            success = subtitle_utils.extract_subtitle_simple(video_file, output_srt)
+            if success:
+                return True
+                
+            # 3. 강제 추출 방식 시도
+            logger.info("모든 일반 방식 실패, 강제 추출 시도 중...")
+            success = subtitle_utils.extract_subtitle_force(video_file, output_srt)
+            if success:
+                return True
+                
+            logger.error(f"모든 자막 추출 방법이 실패했습니다: {os.path.basename(video_file)}")
+            return False
+            
+        except ImportError:
+            logger.warning("subtitle_utils 모듈을 찾을 수 없어 기본 추출 방식 사용")
+    
+        # subtitle_utils를 사용할 수 없는 경우 기본 방식으로 시도
+        import ffmpeg_utils
+        
+        # ffmpeg 무결성 검사
+        if not ffmpeg_utils.check_ffmpeg_integrity():
+            logger.error("ffmpeg 무결성 검사에 실패했습니다.")
+            return False
+        
+        # 기본 방식으로 자막 추출 시도
+        cmd = [
+            "ffmpeg", 
+            "-y",
+            "-i", video_file,
+            "-map", "0:s:0" if track_index is None else f"0:s:{track_index}",
+            "-c:s", "srt",
+            output_srt
+        ]
+        
+        logger.info(f"기본 ffmpeg로 자막 추출 시도: {os.path.basename(video_file)}")
+        logger.debug(f"추출 명령어: {' '.join(cmd)}")
+        
+        # 새로운 ffmpeg_utils 함수 사용
+        success, output = ffmpeg_utils.run_ffmpeg_command(cmd, timeout=120)
+        
+        # 출력 파일 확인
+        if success and os.path.exists(output_srt) and os.path.getsize(output_srt) > 0:
+            logger.info(f"기본 방식으로 자막 추출 성공: {os.path.basename(output_srt)}")
             return True
-        except subprocess.CalledProcessError as e:
-            err_msg = e.stderr.decode('utf-8').strip()
-            logging.error(f"[자막 추출 실패] {os.path.basename(mkv_file)}: {err_msg}")
+        else:
+            logger.warning(f"자막 파일이 생성되지 않았거나 비어있습니다: {output_srt}")
+            if not success:
+                logger.warning(f"ffmpeg 오류: {output}")
             return False
-        except FileNotFoundError:
-            logging.error("ffmpeg를 찾을 수 없습니다. ffmpeg를 설치하거나 PATH에 추가해주세요.")
-            return False
+            
+    except Exception as e:
+        logger.error(f"자막 추출 중 오류 발생: {type(e).__name__} - {e}")
+        return False
 
 def translate_subtitle(srt_file):
     """

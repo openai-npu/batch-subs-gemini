@@ -26,14 +26,33 @@ def list_subtitle_tracks(video_file):
                 }
             ]
     """
-    ffprobe_path = ffmpeg_utils.get_ffprobe_executable()
-    if not ffprobe_path:
-        logger.error("ffprobe를 찾을 수 없습니다.")
-        return []
+    # 방법 1: ffprobe로 시도 (상세 정보)
+    try:
+        return _get_subtitle_tracks_with_ffprobe(video_file)
+    except Exception as e:
+        logger.warning(f"ffprobe로 자막 트랙 정보 가져오기 실패: {e} - 대체 방법 시도")
+    
+    # 방법 2: ffmpeg -i로 시도 (제한된 정보)
+    try:
+        return _get_subtitle_tracks_with_ffmpeg(video_file)
+    except Exception as e:
+        logger.warning(f"ffmpeg로 자막 트랙 정보 가져오기 실패: {e}")
+    
+    # 방법 3: 최소한으로라도 첫 번째 자막 트랙이 있다고 가정
+    logger.warning("모든 방법이 실패했습니다. 기본 자막 트랙을 가정합니다.")
+    return [{'index': 0, 'stream_index': 0, 'language': 'und', 'codec': 'unknown', 'title': 'Auto-detected subtitle'}]
+
+
+def _get_subtitle_tracks_with_ffprobe(video_file):
+    """ffprobe를 사용하여 자막 트랙 정보를 가져옵니다."""
+    # ffmpeg_utils의 무결성 검사 실행
+    if not ffmpeg_utils.check_ffmpeg_integrity():
+        logger.error("ffprobe 무결성 검사에 실패했습니다.")
+        raise RuntimeError("ffprobe 실행 파일 무결성 검사 실패")
     
     try:
         cmd = [
-            ffprobe_path,
+            "ffprobe",
             "-v", "quiet",
             "-print_format", "json",
             "-show_streams",
@@ -41,8 +60,20 @@ def list_subtitle_tracks(video_file):
             video_file
         ]
         
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True, encoding='utf-8')
-        video_info = json.loads(result.stdout)
+        logger.debug(f"ffprobe 명령어 실행: {' '.join(cmd)}")
+        
+        # 새로운 ffmpeg_utils 함수 사용
+        success, output = ffmpeg_utils.run_ffprobe_command(cmd, timeout=30)
+        
+        if not success:
+            logger.error(f"ffprobe 명령 실패: {output}")
+            raise RuntimeError(f"ffprobe 명령 실패: {output}")
+            
+        if not output.strip():
+            logger.warning("ffprobe가 빈 출력을 반환했습니다")
+            return []
+            
+        video_info = json.loads(output)
         
         subtitle_tracks = []
         for i, stream in enumerate(video_info.get("streams", [])):
@@ -56,17 +87,66 @@ def list_subtitle_tracks(video_file):
                 }
                 subtitle_tracks.append(track)
         
+        logger.info(f"ffprobe를 사용하여 {len(subtitle_tracks)}개의 자막 트랙 발견")
         return subtitle_tracks
     
-    except subprocess.CalledProcessError as e:
-        logger.error(f"자막 트랙 정보 가져오기 실패: {e}")
-        return []
     except json.JSONDecodeError as e:
         logger.error(f"JSON 파싱 오류: {e}")
-        return []
+        raise
     except Exception as e:
-        logger.error(f"자막 트랙 정보 가져오기 중 오류 발생: {e}")
-        return []
+        logger.error(f"자막 트랙 정보 가져오기 중 오류 발생: {type(e).__name__} - {e}")
+        raise
+
+
+def _get_subtitle_tracks_with_ffmpeg(video_file):
+    """ffmpeg -i 명령을 사용하여 자막 트랙 정보를 가져옵니다."""
+    # ffmpeg_utils의 무결성 검사 실행
+    if not ffmpeg_utils.check_ffmpeg_integrity():
+        logger.error("ffmpeg 무결성 검사에 실패했습니다.")
+        raise RuntimeError("ffmpeg 실행 파일 무결성 검사 실패")
+    
+    try:
+        # ffmpeg -i 명령은 오류 출력에 스트림 정보를 남김
+        cmd = [
+            "ffmpeg",
+            "-i", video_file
+        ]
+        
+        logger.debug(f"ffmpeg 명령어 실행: {' '.join(cmd)}")
+        
+        # 의도적으로 에러를 받아오기 위한 호출 (새로운 ffmpeg_utils 함수 사용)
+        success, stderr = ffmpeg_utils.run_ffmpeg_command(cmd, timeout=30)
+        
+        # 출력에서 자막 스트림 정보 추출 (ffmpeg는 항상 이 명령에 대해 실패하므로 success는 무시)
+        output = stderr
+        subtitle_tracks = []
+        
+        # "Stream #0:N(LANG): Subtitle: CODEC" 패턴 검색
+        subtitle_pattern = re.compile(r'Stream\s+#\d+:(\d+)(?:\((\w+)\))?\s*:\s*Subtitle:\s*(\w+)')
+        matches = subtitle_pattern.findall(output)
+        
+        for i, match in enumerate(matches):
+            stream_index, lang, codec = match
+            stream_index = int(stream_index)
+            
+            if not lang:
+                lang = "und"
+                
+            track = {
+                'index': i,
+                'stream_index': stream_index,
+                'language': lang,
+                'codec': codec,
+                'title': ''
+            }
+            subtitle_tracks.append(track)
+        
+        logger.info(f"ffmpeg -i를 사용하여 {len(subtitle_tracks)}개의 자막 트랙 발견")
+        return subtitle_tracks
+        
+    except Exception as e:
+        logger.error(f"ffmpeg로 자막 트랙 정보 가져오기 중 오류 발생: {type(e).__name__} - {e}")
+        raise
 
 def find_best_subtitle_track(tracks, preferred_languages=None):
     """가장 적합한 자막 트랙을 찾습니다.
@@ -115,31 +195,48 @@ def extract_subtitle(video_file, output_srt, track_index=None, preferred_languag
     Returns:
         bool: 성공 여부
     """
-    # ffmpeg 경로 확인
-    ffmpeg_path = ffmpeg_utils.get_ffmpeg_executable()
-    if not ffmpeg_path:
-        logger.error("ffmpeg를 찾을 수 없습니다.")
+    # 방법 1: 지정된 트랙이나 자동 선택한 트랙 사용
+    if track_index is not None or extract_subtitle_auto(video_file, output_srt, track_index, preferred_languages):
+        return True
+    
+    # 방법 2: 첫 번째 자막 트랙 사용 (단순 방식)
+    if extract_subtitle_simple(video_file, output_srt):
+        return True
+    
+    # 방법 3: FFmpeg의 모든 미디어 스트림 중 첫 번째 자막 트랙 강제 시도
+    if extract_subtitle_force(video_file, output_srt):
+        return True
+    
+    logger.error(f"모든 자막 추출 방법이 실패했습니다: {os.path.basename(video_file)}")
+    return False
+
+
+def extract_subtitle_auto(video_file, output_srt, track_index=None, preferred_languages=None):
+    """트랙 자동 선택 또는 지정된 트랙으로 자막을 추출합니다."""
+    # ffmpeg 무결성 검사
+    if not ffmpeg_utils.check_ffmpeg_integrity():
+        logger.error("ffmpeg 무결성 검사에 실패했습니다.")
         return False
     
-    # 트랙 인덱스가 지정되지 않은 경우, 자막 트랙 목록을 가져와서 선택
-    if track_index is None:
-        tracks = list_subtitle_tracks(video_file)
-        if not tracks:
-            logger.error(f"'{os.path.basename(video_file)}'에서 자막 트랙을 찾을 수 없습니다.")
-            return False
-        
-        selected_track = find_best_subtitle_track(tracks, preferred_languages)
-        if not selected_track:
-            logger.error(f"'{os.path.basename(video_file)}'에서 적합한 자막 트랙을 찾을 수 없습니다.")
-            return False
-        
-        track_index = selected_track['index']
-        logger.info(f"자막 트랙 #{track_index} ({selected_track.get('language', 'unknown')}) 추출 중...")
-    
-    # ffmpeg 명령 실행
     try:
+        # 트랙 인덱스가 지정되지 않은 경우, 자막 트랙 목록을 가져와서 선택
+        if track_index is None:
+            tracks = list_subtitle_tracks(video_file)
+            if not tracks:
+                logger.error(f"'{os.path.basename(video_file)}'에서 자막 트랙을 찾을 수 없습니다.")
+                return False
+            
+            selected_track = find_best_subtitle_track(tracks, preferred_languages)
+            if not selected_track:
+                logger.error(f"'{os.path.basename(video_file)}'에서 적합한 자막 트랙을 찾을 수 없습니다.")
+                return False
+            
+            track_index = selected_track['index']
+            logger.info(f"자막 트랙 #{track_index} ({selected_track.get('language', 'unknown')}) 추출 중...")
+        
+        # ffmpeg 명령 실행
         cmd = [
-            ffmpeg_path, 
+            "ffmpeg", 
             "-y",  # 기존 파일 덮어쓰기
             "-i", video_file,
             "-map", f"0:s:{track_index}",  # 선택한 자막 트랙
@@ -147,24 +244,135 @@ def extract_subtitle(video_file, output_srt, track_index=None, preferred_languag
             output_srt
         ]
         
-        result = subprocess.run(
-            cmd, 
-            check=True, 
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.PIPE,
-            encoding='utf-8'
-        )
+        logger.debug(f"추출 명령어: {' '.join(cmd)}")
         
-        logger.info(f"[자막 추출 성공] {os.path.basename(video_file)} -> {os.path.basename(output_srt)}")
-        return True
-    
-    except subprocess.CalledProcessError as e:
-        err_msg = e.stderr.strip() if e.stderr else str(e)
-        logger.error(f"[자막 추출 실패] {os.path.basename(video_file)}: {err_msg}")
+        # 새로운 ffmpeg_utils 함수 사용
+        success, output = ffmpeg_utils.run_ffmpeg_command(cmd, timeout=120)
+        
+        # 출력 파일 확인
+        if success and os.path.exists(output_srt) and os.path.getsize(output_srt) > 0:
+            logger.info(f"자막 추출 성공: {os.path.basename(output_srt)}")
+            return True
+        else:
+            logger.warning(f"자막 파일이 생성되지 않았거나 비어있습니다: {output_srt}")
+            if not success:
+                logger.warning(f"ffmpeg 오류: {output}")
+            return False
+        
+    except Exception as e:
+        logger.error(f"자막 추출 중 오류 발생: {type(e).__name__} - {e}")
+        return False
+
+
+def extract_subtitle_simple(video_file, output_srt):
+    """단순하게 첫 번째 자막 트랙만 추출합니다 (main.py 방식)."""
+    # ffmpeg 무결성 검사
+    if not ffmpeg_utils.check_ffmpeg_integrity():
+        logger.error("ffmpeg 무결성 검사에 실패했습니다.")
         return False
     
+    try:
+        # 가장 단순한 방식: 첫 번째 자막 트랙 추출 시도
+        cmd = [
+            "ffmpeg", 
+            "-y",  # 기존 파일 덮어쓰기
+            "-i", video_file,
+            "-map", "0:s:0",  # 첫 번째 자막 트랙
+            "-c:s", "srt",  # SRT 형식으로 변환
+            output_srt
+        ]
+        
+        logger.info(f"단순 방식으로 자막 추출 시도: {os.path.basename(video_file)}")
+        logger.debug(f"추출 명령어: {' '.join(cmd)}")
+        
+        # 새로운 ffmpeg_utils 함수 사용
+        success, output = ffmpeg_utils.run_ffmpeg_command(cmd, timeout=120)
+        
+        # 출력 파일 확인
+        if success and os.path.exists(output_srt) and os.path.getsize(output_srt) > 0:
+            logger.info(f"단순 방식으로 자막 추출 성공: {os.path.basename(output_srt)}")
+            return True
+        else:
+            logger.warning(f"단순 방식으로 자막 파일이 생성되지 않았거나 비어있습니다: {output_srt}")
+            if not success:
+                logger.warning(f"ffmpeg 오류: {output}")
+            return False
+            
     except Exception as e:
-        logger.error(f"[자막 추출 오류] 예상치 못한 오류 발생: {e}")
+        logger.warning(f"단순 방식 자막 추출 중 오류: {type(e).__name__} - {e}")
+        return False
+
+
+def extract_subtitle_force(video_file, output_srt):
+    """모든 자막 추출 방법이 실패한 경우 강제로 시도합니다."""
+    # ffmpeg 무결성 검사
+    if not ffmpeg_utils.check_ffmpeg_integrity():
+        logger.error("ffmpeg 무결성 검사에 실패했습니다.")
+        return False
+    
+    try:
+        # 모든 스트림 정보 획득
+        cmd_info = [
+            "ffmpeg",
+            "-i", video_file
+        ]
+        
+        logger.info(f"강제 추출 위한 스트림 정보 획득 중: {os.path.basename(video_file)}")
+        
+        # 새로운 ffmpeg_utils 함수 사용
+        success, stderr = ffmpeg_utils.run_ffmpeg_command(cmd_info, timeout=30)
+        
+        # 스트림 인덱스 추출 (stderr에 출력됨)
+        output = stderr
+        streams = []
+        
+        # 모든 스트림 찾기
+        stream_pattern = re.compile(r'Stream\s+#\d+:(\d+)')
+        streams = stream_pattern.findall(output)
+        
+        if not streams:
+            logger.warning("스트림 정보를 찾을 수 없습니다.")
+            return False
+            
+        # 각 스트림을 자막으로 가정하고 시도
+        for stream_idx in streams:
+            try:
+                logger.info(f"스트림 #{stream_idx}를 자막으로 추출 시도")
+                
+                cmd = [
+                    "ffmpeg", 
+                    "-y",
+                    "-i", video_file,
+                    "-map", f"0:{stream_idx}",
+                    "-c:s", "srt",
+                    output_srt
+                ]
+                
+                # 새로운 ffmpeg_utils 함수 사용
+                success, _ = ffmpeg_utils.run_ffmpeg_command(cmd, timeout=60)
+                
+                # 유효한 자막인지 확인
+                if success and os.path.exists(output_srt) and os.path.getsize(output_srt) > 0:
+                    # 최소한의 SRT 형식 검증
+                    with open(output_srt, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read(200)  # 처음 200바이트만 읽음
+                        if re.search(r'\d+\s+\d{2}:\d{2}:\d{2},\d{3}', content):
+                            logger.info(f"스트림 #{stream_idx}에서 자막 추출 성공")
+                            return True
+                    
+                    # SRT 형식이 아니라면 파일 삭제
+                    if os.path.exists(output_srt):
+                        os.remove(output_srt)
+                    
+            except Exception as e:
+                logger.debug(f"스트림 #{stream_idx} 추출 실패: {e}")
+                continue
+                
+        logger.warning("어떤 스트림에서도 자막을 추출할 수 없습니다.")
+        return False
+        
+    except Exception as e:
+        logger.warning(f"강제 자막 추출 중 오류: {type(e).__name__} - {e}")
         return False
 
 def extract_all_subtitles(video_file, output_dir=None, preferred_format='srt'):
